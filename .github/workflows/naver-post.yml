@@ -1,0 +1,65 @@
+name: Naver Auto Blog
+
+on:
+  workflow_dispatch:       # 수동 실행 (버튼 클릭)
+  # schedule:
+  #   - cron: '0 1 * * 1,3,5'   # 월/수/금 오전 10시 KST (UTC+9 → UTC 01:00)
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  naver-post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Chrome 설치
+        uses: browser-actions/setup-chrome@latest
+        with:
+          chrome-version: stable
+
+      - name: 한글 폰트 설치 (차트용)
+        run: sudo apt-get install -y fonts-nanum && fc-cache -fv
+
+      - name: 패키지 설치
+        run: pip install -r requirements.txt
+
+      - name: 쿠키 복원 (GitHub Secret → 파일)
+        run: |
+          mkdir -p cookies
+          echo "${{ secrets.NAVER_COOKIES_B64 }}" | base64 -d > cookies/naver_cookies.json
+          echo "쿠키 파일 복원 완료 ($(wc -c < cookies/naver_cookies.json) bytes)"
+
+      - name: 네이버 블로그 자동 포스팅
+        env:
+          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
+          NAVER_BLOG_ID:        ${{ secrets.NAVER_BLOG_ID }}
+          NAVER_USERNAME:       ${{ secrets.NAVER_USERNAME }}
+          NAVER_PASSWORD:       ${{ secrets.NAVER_PASSWORD }}
+          NAVER_CLIENT_ID:      ${{ secrets.NAVER_CLIENT_ID }}
+          NAVER_CLIENT_SECRET:  ${{ secrets.NAVER_CLIENT_SECRET }}
+          PEXELS_API_KEY:       ${{ secrets.PEXELS_API_KEY }}
+          POST_STATUS:          draft
+          HEADLESS:             "true"
+        run: python main.py
+
+      - name: 실패 시 안내
+        if: failure()
+        run: |
+          echo "========================================"
+          echo "포스팅 실패! 아래 사항을 확인하세요:"
+          echo "  1. NAVER_COOKIES_B64 만료 → 로컬에서 --login 후 --export-cookies 재실행"
+          echo "  2. ANTHROPIC_API_KEY 확인"
+          echo "  3. 네이버 계정 잠금 여부 확인"
+          echo "========================================"

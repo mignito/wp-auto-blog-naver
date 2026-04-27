@@ -1,0 +1,12 @@
+.env
+cookies/
+logs/
+charts/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+preview_*.html
+*.jpg
+*.jpeg
+*.png
