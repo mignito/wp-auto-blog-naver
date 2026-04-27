@@ -45,7 +45,30 @@ class NaverPublisher:
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--window-size=1280,900")
         options.add_argument("--lang=ko-KR")
-        self.driver = uc.Chrome(options=options)
+        # detect installed Chrome version to download matching ChromeDriver
+        import subprocess, re as _re
+        ver = None
+        for reg_path in [
+            r"HKCU\SOFTWARE\Google\Chrome\BLBeacon",
+            r"HKLM\SOFTWARE\Google\Chrome\BLBeacon",
+            r"HKLM\SOFTWARE\WOW6432Node\Google\Chrome\BLBeacon",
+        ]:
+            try:
+                out = subprocess.check_output(
+                    ["reg", "query", reg_path, "/v", "version"],
+                    stderr=subprocess.DEVNULL
+                ).decode(errors="ignore")
+                m = _re.search(r"(\d+)\.\d+\.\d+\.\d+", out)
+                if m:
+                    ver = int(m.group(1))
+                    break
+            except Exception:
+                pass
+        print(f"  Chrome 버전 감지: {ver}")
+        kwargs = {"options": options}
+        if ver:
+            kwargs["version_main"] = ver
+        self.driver = uc.Chrome(**kwargs)
         self.driver.implicitly_wait(5)
 
     def _quit(self):
@@ -108,30 +131,34 @@ class NaverPublisher:
 
     # ── 로그인 ──────────────────────────────────────────────────
     def _manual_login_wait(self) -> bool:
-        """
-        브라우저를 열고 사용자가 직접 로그인할 때까지 대기.
-        HEADLESS=false 모드에서 실행되어야 합니다.
-        """
+        """자동 로그인 시도 → 실패 시 수동 대기 (non-headless)"""
+        print("  자동 로그인 시도 중...")
+        if self._auto_login():
+            return True
+
+        # 자동 로그인 실패 + headless이면 포기
+        if self.headless:
+            print("  헤드리스 모드에서 자동 로그인 실패.")
+            return False
+
+        # non-headless: 90초 폴링 방식 수동 로그인 대기 (input() 없음)
         print("\n" + "="*55)
-        print("  [수동 로그인 필요]")
-        print("  브라우저에서 네이버에 로그인하세요.")
-        print("  로그인 완료 후 이 창으로 돌아와 Enter를 누르세요.")
+        print("  [수동 로그인 필요] 브라우저 창에서 네이버에 로그인하세요.")
+        print("  120초 안에 로그인하면 자동으로 계속 진행됩니다.")
         print("="*55)
         self.driver.get("https://nid.naver.com/nidlogin.login")
-
-        # headless가 아닌 경우 사용자 입력 대기
-        if not self.headless:
-            input("  로그인 완료 후 Enter 키 누르기: ")
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            remaining = int(deadline - time.time())
+            print(f"\r  로그인 대기 중... {remaining}초 남음", end="", flush=True)
+            time.sleep(3)
             if self._is_logged_in():
+                print()
                 self._save_cookies()
                 print("  로그인 성공, 쿠키 저장 완료")
                 return True
-            else:
-                print("  로그인 상태를 확인할 수 없습니다.")
-                return False
-
-        # headless 모드에서는 자동 로그인 시도
-        return self._auto_login()
+        print("\n  120초 초과 - 로그인 실패")
+        return False
 
     def _auto_login(self) -> bool:
         """자동 ID/PW 입력 로그인 (봇 감지 주의)"""
