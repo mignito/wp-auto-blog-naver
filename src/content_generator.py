@@ -11,7 +11,10 @@
 
 import os
 import re
+import requests
+import xml.etree.ElementTree as ET
 import anthropic
+from datetime import datetime
 
 
 DISCLAIMER = (
@@ -21,18 +24,70 @@ DISCLAIMER = (
     "투자 결정은 본인 책임이며 원금 손실 가능성이 있습니다.</div>"
 )
 
-RELATED_FOOTER = (
-    '<hr style="border:none;border-top:1px solid #e0e0e0;margin:28px 0;">'
-    '<div style="background:#f0f4ff;border:1px solid #c5d0f0;padding:18px;'
-    'margin:18px 0;border-radius:8px;">'
-    "<h3 style='margin-top:0;font-size:15px;color:#2c3e50;'>함께 보면 좋은 정보</h3>"
-    '<ul style="margin:0;padding-left:20px;line-height:2.2;">'
-    '<li><a href="https://winone-life.com" target="_blank" rel="noopener">'
-    "생활 속 금융·절세 꿀팁 — winone-life.com</a></li>"
-    '<li><a href="https://winone-worekr.com" target="_blank" rel="noopener">'
-    "직장인 재테크·노무 정보 — winone-worekr.com</a></li>"
-    "</ul></div>"
-)
+# ── 관련 글 RSS 크롤링 ──────────────────────────────────────────
+_RELATED_SITES = [
+    ("winone-life.com",   "https://winone-life.com/feed/"),
+    ("winone-worker.com", "https://winone-worker.com/feed/"),
+]
+
+_RELATED_FALLBACK = [
+    {"title": "관리비 줄이는 방법 아파트 3가지 꿀팁 2026년 최신",
+     "url": "https://winone-life.com/%ea%b4%80%eb%a6%ac%eb%b9%84-%ec%a4%84%ec%9d%b4%eb%8a%94-%eb%b0%a9%eb%b2%95-%ec%95%84%ed%8c%8c%ed%8a%b8/%ea%b8%b0%ed%83%80%ec%a0%95%eb%b3%b4/",
+     "site": "winone-life.com"},
+    {"title": "2026년 IRP 세액공제 한도 8가지 핵심 정리",
+     "url": "https://winone-life.com/irp-%ec%84%b8%ec%95%a1%ea%b3%b5%ec%a0%9c-%ed%95%9c%eb%8f%84-2/%ea%b8%b0%ed%83%80%ec%a0%95%eb%b3%b4/",
+     "site": "winone-life.com"},
+    {"title": "소상공인 대출 신청 6가지 방법 완벽 정리",
+     "url": "https://winone-worker.com/%ec%86%8c%ec%83%81%ea%b3%b5%ec%9d%b8-%eb%8c%80%ec%b6%9c-%ec%8b%a0%ec%b2%ad%eb%b0%a9%eb%b2%95-2/",
+     "site": "winone-worker.com"},
+    {"title": "상속세 절세 방법 2026 완벽 정리 | 꼭 알아야 할 핵심 정보",
+     "url": "https://winone-worker.com/%ec%83%81%ec%86%8d%ec%84%b8-%ec%a0%88%ec%84%b8-%eb%b0%a9%eb%b2%95-2026/",
+     "site": "winone-worker.com"},
+]
+
+
+def _fetch_related_posts() -> list:
+    """RSS 피드에서 최신 글 2개씩 크롤링. 실패 시 fallback 반환."""
+    posts = []
+    for site_name, feed_url in _RELATED_SITES:
+        try:
+            resp = requests.get(
+                feed_url, timeout=8,
+                headers={"User-Agent": "Mozilla/5.0"}
+            )
+            root = ET.fromstring(resp.content)
+            items = root.findall(".//item")[:2]
+            for item in items:
+                title = item.findtext("title", "").strip()
+                link  = item.findtext("link",  "").strip()
+                if title and link:
+                    posts.append({"title": title, "url": link, "site": site_name})
+        except Exception as e:
+            print(f"  관련 글 크롤링 실패 ({site_name}): {e}")
+
+    return posts if len(posts) >= 2 else _RELATED_FALLBACK
+
+
+def _build_related_footer(posts: list) -> str:
+    items_html = "\n".join(
+        f'<li style="margin-bottom:10px;">'
+        f'<a href="{p["url"]}" target="_blank" rel="noopener" '
+        f'style="color:#1a5276;text-decoration:none;font-weight:500;">'
+        f'📌 {p["title"]}</a>'
+        f'<span style="font-size:12px;color:#999;margin-left:8px;">— {p["site"]}</span>'
+        f"</li>"
+        for p in posts
+    )
+    return (
+        '<div style="border-top:1px solid #e0e0e0;margin:36px 0 0;padding-top:4px;"></div>'
+        '<div style="background:#f8f9fa;border:1px solid #dee2e6;padding:20px 24px;'
+        'margin:16px 0 8px;border-radius:8px;">'
+        "<h3 style='margin-top:0;margin-bottom:12px;font-size:15px;color:#2c3e50;'>"
+        "📚 함께 보면 좋은 정보</h3>"
+        f'<ul style="margin:0;padding-left:20px;line-height:1.8;">'
+        f'{items_html}'
+        "</ul></div>"
+    )
 
 
 def _fmt(n, unit="원") -> str:
@@ -109,6 +164,10 @@ class ContentGenerator:
 
     def _clean(self, text: str) -> str:
         text = re.sub(r"^```html\s*|^```\s*|\s*```$|```html|```", "", text.strip())
+        text = re.sub(r'<!DOCTYPE[^>]*>', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'<html[^>]*>|</html>', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'<head>.*?</head>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<body[^>]*>|</body>', '', text, flags=re.IGNORECASE)
         return text.strip()
 
     # ── [Python] 재무 지표 테이블 — 토큰 0 ─────────────────────
@@ -151,7 +210,37 @@ class ContentGenerator:
         html += "</tbody></table>"
         return html
 
-    # ── [Haiku Vision] 차트 분석 — 메인 섹션 ───────────────────
+    # ── [Haiku] 자극적 제목 생성 (4가지 패턴 강제) ──────────────
+    def _generate_title(self, stock: dict) -> str:
+        name = stock["name"]
+        chg  = stock.get("change_pct", 0)
+        per  = stock.get("per")
+
+        valid = [
+            f"{name} 하락할 수밖에 없는 이유",
+            f"{name} 상승할 수밖에 없는 이유",
+            f"{name} 매도해야 하는 이유",
+            f"{name} 지금이 저점인 이유",
+        ]
+        user = (
+            f"종목: {name}, 오늘 등락률: {chg:+.2f}%"
+            + (f", PER: {per:.1f}배" if per else "")
+            + "\n\n아래 4개 중 재무지표·등락률에 가장 어울리는 것 1개를 그대로 출력:\n"
+            f"1. {valid[0]}\n"
+            f"2. {valid[1]}\n"
+            f"3. {valid[2]}\n"
+            f"4. {valid[3]}\n\n"
+            "번호·따옴표 없이 선택한 문장만 출력."
+        )
+        raw = self._call("주식 투자 분석가.", user, max_tokens=40)
+        title = next((p for p in valid if p in (raw or "")), None)
+        if not title:
+            title = valid[1] if chg >= 0 else valid[0]
+
+        date_str = datetime.now().strftime("'%y%m%d")
+        return f"{title}({date_str})"
+
+    # ── [Haiku Vision] 차트 기술적 분석 ────────────────────────
     def _analyze_chart(self, chart_b64: str, stock: dict) -> str:
         name  = stock["name"]
         price = stock.get("price", 0)
@@ -159,97 +248,189 @@ class ContentGenerator:
         w52h  = f"{stock['week52_high']:,.0f}" if stock.get("week52_high") else "N/A"
         w52l  = f"{stock['week52_low']:,.0f}"  if stock.get("week52_low")  else "N/A"
 
-        system = "주식 기술적 분석가. HTML만 출력(```없이). 허용 태그: p strong ul li span."
-
+        system = "주식 기술적 분석가. HTML만 출력(``` 없이). 허용 태그: h3 p strong ul li."
         user = (
-            f"{name} 3개월 주가 차트.\n"
-            f"현재가 {price:,.0f}원({chg:+.2f}%), 52주 고/저 {w52h}/{w52l}원.\n"
+            f"{name} 3개월 차트. 현재가 {price:,.0f}원({chg:+.2f}%), "
+            f"52주 고/저 {w52h}/{w52l}원.\n"
             "차트: 종가선(파랑) MA5(노랑) MA20(빨강) 52주선(점선) 거래량 바.\n\n"
-            "아래 5항목을 각각 <p>로 구체적으로 분석 (수치 포함):\n"
-            "1. <strong>추세 분석</strong> — 단기(1개월)·중기(3개월) 추세 방향, "
-            "이동평균 정배열/역배열 여부\n"
-            "2. <strong>지지·저항선</strong> — 주요 가격대, 현재가 위치, "
-            "돌파 시 목표가/이탈 시 하락폭\n"
-            "3. <strong>거래량 분석</strong> — 최근 거래량 증감, 가격·거래량 다이버전스 여부\n"
-            "4. <strong>기술적 신호</strong> — 골든/데드크로스, 과매수·과매도 구간 여부\n"
-            "5. <strong>단기 전망</strong> — 1~2주 시나리오 (상승/횡보/하락) 및 "
-            "주목할 가격대"
+            "5항목을 <h3>소제목</h3>+<p>본문(2~3문장, 수치포함)으로 작성:\n"
+            "1. <h3>📈 추세 분석</h3> 단기·중기 방향, 이평 정/역배열\n"
+            "2. <h3>🔍 지지·저항선</h3> 주요 가격대, 돌파/이탈 시나리오\n"
+            "3. <h3>📊 거래량 분석</h3> 증감 추이, 가격-거래량 다이버전스\n"
+            "4. <h3>⚡ 기술적 신호</h3> 골든/데드크로스, 과매수·과매도\n"
+            "5. <h3>🎯 단기 전망(1~2주)</h3> 시나리오별 조건, 핵심 가격대"
         )
+        return self._call(system, user, max_tokens=900, chart_b64=chart_b64)
 
-        return self._call(system, user, max_tokens=1200, chart_b64=chart_b64)
-
-    # ── [Haiku] 회사 소개 + 투자 포인트 ─────────────────────────
-    def _write_summary(self, stock: dict) -> str:
+    # ── [Haiku] 한경컨센서스 스타일 투자 리포트 ──────────────────
+    def _write_summary(self, stock: dict, chart_analysis: str = "") -> str:
         name    = stock["name"]
         sector  = stock.get("sector", "")
-        summary = (stock.get("summary") or "")[:150]
+        summary = (stock.get("summary") or "")[:200]
+        price   = stock.get("price", 0)
+        chg     = stock.get("change_pct", 0)
+        per     = f"{stock['per']:.1f}배"  if stock.get("per")  else "N/A"
+        pbr     = f"{stock['pbr']:.2f}배"  if stock.get("pbr")  else "N/A"
+        roe     = f"{stock['roe']*100:.1f}%" if stock.get("roe") else "N/A"
+        rev     = _fmt(stock.get("revenue"))
+        oi      = _fmt(stock.get("operating_income"))
+        w52h    = f"{stock['week52_high']:,.0f}" if stock.get("week52_high") else "N/A"
+        w52l    = f"{stock['week52_low']:,.0f}"  if stock.get("week52_low")  else "N/A"
 
+        # 차트 분석 텍스트에서 핵심 신호만 추출 (최대 500자)
+        chart_context = ""
+        if chart_analysis:
+            plain = re.sub(r'<[^>]+>', ' ', chart_analysis)
+            plain = re.sub(r'\s+', ' ', plain).strip()[:500]
+            chart_context = f"\n\n[차트 기술 분석 요약]: {plain}"
+
+        td = "padding:10px 14px;border:1px solid #dde;font-size:14px;"
         user = (
-            f"{name}({sector}) 주식 블로그 글.\n"
-            f"회사개요: {summary}\n\n"
-            "HTML로 작성:\n"
-            f"1. <p> — {name} 핵심 사업 소개 (2문장)\n"
-            "2. <h2>투자 포인트</h2>\n"
-            "   <ul><li>긍정 포인트 3개 (한 줄씩)</li></ul>\n"
-            "   <ul><li>주의 리스크 2개 (한 줄씩)</li></ul>"
-        )
+            f"종목:{name}({sector}), {price:,.0f}원({chg:+.2f}%)\n"
+            f"PER:{per} PBR:{pbr} ROE:{roe} 52주고:{w52h} 52주저:{w52l}\n"
+            f"매출:{rev} 영업이익:{oi}\n"
+            f"기업개요:{summary}"
+            + chart_context
+            + "\n\n"
+            "한국 증권사 투자 리포트 형식으로 HTML 작성. 아래 구조를 그대로 따를 것.\n"
+            "허용 태그: h2 h3 p strong em ul li table tr td th div span.\n\n"
 
-        return self._call("주식 블로거. HTML만 출력(```없이).", user, max_tokens=400)
+            "<h2>🏢 기업 개요</h2>\n"
+            "<p>핵심 사업·시장 포지셔닝·경쟁력 2문장.</p>\n\n"
+
+            "<h2>📰 시장 동향 및 핵심 이슈</h2>\n"
+            f"<p><strong>오늘 주가 동향</strong>: {chg:+.2f}% 움직임의 배경과 원인을 구체적으로.</p>\n"
+            f"<p><strong>섹터 트렌드</strong>: {sector} 업종 최근 흐름 및 {name}에 미치는 영향.</p>\n"
+            "<p><strong>주목 이슈</strong>: 실적·수주·정책·금리 등 투자자 주목 이슈 (수치 포함).</p>\n"
+            "<p><strong>단기 촉매·리스크</strong>: 향후 주가에 영향을 줄 변수.</p>\n\n"
+
+            "<h2>✅ 투자 포인트 (Bull vs Bear)</h2>\n"
+            "각 항목은 반드시 구체적 수치(%, 원, 배, 성장률)를 포함할 것.\n"
+            f"<table style='width:100%;border-collapse:collapse;margin:14px 0;'>\n"
+            f"<tr style='background:#e8f5e9;'>"
+            f"<th style='{td}width:22%;'>구분</th>"
+            f"<th style='{td}'>내용</th></tr>\n"
+
+            f"<tr><td style='{td}color:#1a7431;font-weight:bold;'>💚 강점 1</td>"
+            f"<td style='{td}'>실적·매출 성장성 — 수치(매출액, 영업이익, YoY %) 포함</td></tr>\n"
+
+            f"<tr style='background:#f2faf2;'><td style='{td}color:#1a7431;font-weight:bold;'>💚 강점 2</td>"
+            f"<td style='{td}'>밸류에이션 매력 — PER/PBR 업종평균 대비 수치 포함</td></tr>\n"
+
+            f"<tr><td style='{td}color:#1a7431;font-weight:bold;'>💚 강점 3 (차트)</td>"
+            f"<td style='{td}'>차트 기술적 지지 — 이평선·지지선·거래량 등 차트 분석 기반 매수 포인트</td></tr>\n"
+
+            f"<tr style='background:#fff8f8;'><td style='{td}color:#b71c1c;font-weight:bold;'>🔴 리스크 1</td>"
+            f"<td style='{td}'>업종·거시 환경 리스크 — 금리·환율·경쟁 등 수치 포함</td></tr>\n"
+
+            f"<tr><td style='{td}color:#b71c1c;font-weight:bold;'>🔴 리스크 2</td>"
+            f"<td style='{td}'>실적 변동성·경쟁 리스크 — 매출 감소 시나리오 또는 경쟁사 대비</td></tr>\n"
+
+            f"<tr style='background:#fff8f8;'><td style='{td}color:#b71c1c;font-weight:bold;'>🔴 리스크 3 (차트)</td>"
+            f"<td style='{td}'>기술적 하방 리스크 — 지지선 이탈 시 손절 기준·하락 목표가</td></tr>\n"
+            "</table>\n\n"
+
+            "<h2>💼 투자 의견 및 전망</h2>\n"
+            "<p><strong>밸류에이션</strong>: 현재 PER·PBR 수준 평가 및 업종 평균 대비 (수치 포함).</p>\n"
+            "<p><strong>단기 전망</strong>: 향후 1~4주 주가 방향성·핵심 모니터링 가격대.</p>\n"
+            "<p><strong>결론</strong>: 한 줄 투자 결론.</p>\n\n"
+
+            "HTML만 출력. ``` 코드블록 없이."
+        )
+        return self._call(
+            "국내 증권사 애널리스트. 한경컨센서스 스타일 투자 리포트 HTML만 출력.",
+            user, max_tokens=1200
+        )
 
     # ── 전체 글 조립 ─────────────────────────────────────────────
     def generate_article(self, stock: dict) -> dict:
-        name = stock["name"]
-        code = stock["code"]
-        chg  = stock.get("change_pct", 0)
+        name  = stock["name"]
+        code  = stock["code"]
+        price = stock.get("price", 0)
+        chg   = stock.get("change_pct", 0)
 
-        print(f"  [1/2] 차트 분석 (Haiku Vision)...")
+        print(f"  [1/4] 자극적 제목 생성 (Haiku)...")
+        title = self._generate_title(stock)
+
+        print(f"  [2/4] 차트 기술 분석 (Haiku Vision)...")
         chart_html = self._analyze_chart(stock["chart_b64"], stock)
 
-        print(f"  [2/2] 회사 요약 (Haiku)...")
-        summary_html = self._write_summary(stock)
+        print(f"  [3/4] 투자 리포트 작성 (Haiku, 차트 분석 반영)...")
+        summary_html = self._write_summary(stock, chart_analysis=chart_html)
 
-        # 재무 테이블은 Python으로 직접 생성 (토큰 0)
+        print(f"  [4/4] 관련 글 크롤링 및 글 조립...")
+        related_posts   = _fetch_related_posts()
+        related_footer  = _build_related_footer(related_posts)
+
         finance_table = self._build_finance_table(stock)
 
-        # 차트 이미지 figure 태그
-        chart_figure = (
-            f'<figure style="margin:20px 0;text-align:center;">'
-            f'<img src="CHART_IMAGE" alt="{name} 주가 차트" '
-            f'style="max-width:100%;border-radius:8px;border:1px solid #dde;" />'
-            f'</figure>'
+        # 투자의견 박스 (등락률 기반 rough estimate)
+        if chg >= 1.0:
+            opinion, ocolor = "BUY", "#155724"
+            target_price = int(price * 1.20 / 100) * 100
+        elif chg <= -2.0:
+            opinion, ocolor = "REDUCE", "#721c24"
+            target_price = int(price * 0.90 / 100) * 100
+        else:
+            opinion, ocolor = "HOLD", "#7a5100"
+            target_price = int(price * 1.08 / 100) * 100
+        upside = ((target_price / price) - 1) * 100 if price else 0
+
+        opinion_box = (
+            f'<div style="background:#f8f9fa;border-left:5px solid {ocolor};'
+            f'padding:14px 20px;border-radius:6px;margin:20px 0;">'
+            f'<table style="width:100%;border:none;"><tr>'
+            f'<td style="width:80px;font-size:22px;font-weight:900;color:{ocolor};">{opinion}</td>'
+            f'<td style="text-align:center;font-size:13px;">목표주가<br>'
+            f'<strong style="font-size:16px;">{target_price:,.0f}원</strong></td>'
+            f'<td style="text-align:center;font-size:13px;">현재가<br>'
+            f'<strong style="font-size:16px;">{price:,.0f}원</strong></td>'
+            f'<td style="text-align:center;font-size:13px;">상승여력<br>'
+            f'<strong style="font-size:16px;color:{ocolor};">{upside:+.1f}%</strong></td>'
+            f'</tr></table></div>'
         )
 
-        today    = __import__("datetime").datetime.now().strftime("%m월 %d일")
-        chg_word = "급등" if chg >= 3 else ("상승" if chg >= 0 else "하락")
-        title    = f"{today} {name} 주가 {chg_word} | 차트·재무 분석"
+        chart_figure = (
+            f'<p style="text-align:center;">'
+            f'<img src="CHART_IMAGE" alt="{name} 3개월 주가 차트" '
+            f'style="max-width:100%;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.15);" />'
+            f'</p>'
+            f'<p style="text-align:center;font-size:12px;color:#888;margin-top:4px;">'
+            f'▲ {name} 최근 3개월 주가 차트 (MA5·MA20·거래량)</p>'
+        )
 
-        body = f"""<p>오늘 네이버페이 증권에서 가장 많이 조회된 종목은 <strong>{name}</strong>입니다.
-현재가 <strong>{stock.get('price', 0):,.0f}원</strong> ({chg:+.2f}%)로 거래되고 있습니다.</p>
+        HR = '<div style="border-top:2px solid #eee;margin:24px 0;height:1px;overflow:hidden;"></div>'
 
-{summary_html}
+        body = (
+            opinion_box
+            + f"\n{HR}\n"
+            + summary_html
+            + f"\n{HR}\n"
+            + f'<h2>📋 핵심 재무 지표</h2>\n'
+            + finance_table
+            + f"\n{HR}\n"
+            + f'<h2>📈 주가 차트 분석 (3개월)</h2>\n'
+            + chart_figure + "\n"
+            + chart_html
+        )
 
-<h2>재무 지표 요약</h2>
-{finance_table}
+        full_content = DISCLAIMER + "\n" + body + "\n" + related_footer
 
-<h2>차트 분석</h2>
-{chart_figure}
-{chart_html}
-"""
-
-        full_content = DISCLAIMER + "\n" + body + "\n" + RELATED_FOOTER
-
+        sector = stock.get("sector", "주식")
         tags = [
-            name, f"{name} 주가", f"{name} 차트분석",
-            "네이버페이 증권", "오늘 인기 종목",
-            "주식 차트", "재무분석", "개인투자자",
-            stock.get("sector", "주식"), "주식 분석",
+            name, f"{name} 주가", f"{name} 주가 전망", f"{name} 차트",
+            f"{name} 매수", f"{name} 매도", f"{name} 분석",
+            code, f"{sector} 주식", f"{sector} 대장주",
+            "오늘의 주식", "주식 추천", "주식 분석", "주식 차트",
+            "개인투자자", "재무분석", "기술적분석", "국내주식",
+            "투자리포트", "주식투자",
         ]
 
         print(f"  완료 | 제목: {title}")
         return {
             "title":      title,
             "content":    full_content,
-            "tags":       [t for t in tags if t][:10],
+            "tags":       [t for t in tags if t][:20],
             "chart_file": stock.get("chart_file", ""),
             "stock_name": name,
             "stock_code": code,

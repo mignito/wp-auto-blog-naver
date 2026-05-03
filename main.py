@@ -16,6 +16,12 @@ import argparse
 from datetime import datetime
 from dotenv import load_dotenv
 
+# 한글/특수문자 콘솔 출력 보장 (cp949 인코딩 오류 방지)
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 load_dotenv()
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 

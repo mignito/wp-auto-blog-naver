@@ -2,23 +2,24 @@
 네이버 블로그 자동 포스팅 모듈
 - undetected-chromedriver로 봇 감지 우회
 - 쿠키 기반 세션 유지 (재로그인 최소화)
-- 스마트에디터 ONE(SE ONE) JavaScript 인젝션
+- 스마트에디터 ONE(SE ONE) 클립보드 paste 방식 콘텐츠 주입
 """
 
 import os
 import json
 import time
 import random
-import tempfile
-import requests
 from pathlib import Path
 
+import platform
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
+
+IS_WINDOWS = platform.system() == "Windows"
 
 
 COOKIE_FILE = "cookies/naver_cookies.json"
@@ -109,21 +110,13 @@ class NaverPublisher:
             return False
 
     def _is_logged_in(self) -> bool:
-        """로그인 상태 확인 (네이버 메인에서 로그인 여부 체크)"""
+        """NID_AUT / NID_SES 쿠키 존재 여부로 로그인 확인"""
         try:
-            self.driver.get("https://www.naver.com")
-            time.sleep(2)
-            # 로그인 시 .MyView-module__link_login 가 없어야 함
-            # 또는 .gnb_name (아이디 표시) 요소가 있으면 로그인 상태
-            elements = self.driver.find_elements(By.CSS_SELECTOR, ".gnb_name, .MyView-module__link_id__KvCqN")
-            if elements:
-                print(f"  로그인 상태 확인: {elements[0].text}")
-                return True
-            # 로그인 버튼이 있으면 로그아웃 상태
-            login_btns = self.driver.find_elements(By.CSS_SELECTOR, ".link_login, [class*='login']")
-            for btn in login_btns:
-                if "로그인" in btn.text:
-                    return False
+            cookies = self.driver.get_cookies()
+            for c in cookies:
+                if c.get("name") in ("NID_AUT", "NID_SES") and c.get("value"):
+                    print(f"  로그인 쿠키 확인 ({c['name']})")
+                    return True
             return False
         except Exception as e:
             print(f"  로그인 상태 확인 오류: {e}")
@@ -131,33 +124,40 @@ class NaverPublisher:
 
     # ── 로그인 ──────────────────────────────────────────────────
     def _manual_login_wait(self) -> bool:
-        """자동 로그인 시도 → 실패 시 수동 대기 (non-headless)"""
-        print("  자동 로그인 시도 중...")
-        if self._auto_login():
-            return True
-
-        # 자동 로그인 실패 + headless이면 포기
+        """비헤드리스: 수동 로그인 / 헤드리스: 자동 로그인"""
         if self.headless:
-            print("  헤드리스 모드에서 자동 로그인 실패.")
+            print("  자동 로그인 시도 중...")
+            if self._auto_login():
+                return True
+            print("  헤드리스 자동 로그인 실패.")
             return False
 
-        # non-headless: 90초 폴링 방식 수동 로그인 대기 (input() 없음)
+        # non-headless: 수동 로그인 (봇 감지 방지를 위해 자동 입력 안 함)
         print("\n" + "="*55)
-        print("  [수동 로그인 필요] 브라우저 창에서 네이버에 로그인하세요.")
-        print("  120초 안에 로그인하면 자동으로 계속 진행됩니다.")
+        print("  [브라우저 로그인 필요]")
+        print("  지금 열리는 Chrome 창에서 네이버에 로그인하세요.")
+        print("  로그인 완료되면 자동으로 감지합니다.")
         print("="*55)
         self.driver.get("https://nid.naver.com/nidlogin.login")
-        deadline = time.time() + 120
+        self.driver.maximize_window()
+
+        deadline = time.time() + 180
         while time.time() < deadline:
             remaining = int(deadline - time.time())
-            print(f"\r  로그인 대기 중... {remaining}초 남음", end="", flush=True)
-            time.sleep(3)
-            if self._is_logged_in():
-                print()
-                self._save_cookies()
-                print("  로그인 성공, 쿠키 저장 완료")
-                return True
-        print("\n  120초 초과 - 로그인 실패")
+            print(f"\r  로그인 대기 중... {remaining}초 남음  ", end="", flush=True)
+            time.sleep(2)
+            try:
+                cur = self.driver.current_url
+                if "nid.naver.com" not in cur and "naver.com" in cur:
+                    cookies = self.driver.get_cookies()
+                    if any(c.get("name") in ("NID_AUT", "NID_SES") for c in cookies):
+                        print("\n  로그인 감지!")
+                        self._save_cookies()
+                        print("  쿠키 저장 완료")
+                        return True
+            except Exception:
+                pass
+        print("\n  3분 초과 - 로그인 실패")
         return False
 
     def _auto_login(self) -> bool:
@@ -172,7 +172,6 @@ class NaverPublisher:
             id_field = WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located((By.ID, "id"))
             )
-            # 사람처럼 천천히 타이핑
             for char in self.username:
                 id_field.send_keys(char)
                 time.sleep(random.uniform(0.05, 0.15))
@@ -209,233 +208,429 @@ class NaverPublisher:
         print("  쿠키 로그인 실패. 새로 로그인합니다...")
         return self._manual_login_wait()
 
-    # ── SE ONE 에디터 콘텐츠 주입 ──────────────────────────────
+    # ── SE ONE 에디터 로딩 대기 ──────────────────────────────────
     def _wait_for_editor(self, timeout=30) -> bool:
         """SE ONE 에디터가 로드될 때까지 대기"""
         end = time.time() + timeout
         while time.time() < end:
-            # 에디터 iframe 또는 contenteditable 확인
             iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
             for iframe in iframes:
                 src = iframe.get_attribute("src") or ""
                 cls = iframe.get_attribute("class") or ""
                 if "se" in src.lower() or "se" in cls.lower() or "editor" in cls.lower():
                     return True
-            # 메인 문서에 contenteditable이 있는 경우
             edits = self.driver.find_elements(By.CSS_SELECTOR, "[contenteditable='true']")
             if edits:
                 return True
             time.sleep(1)
         return False
 
+    # ── SE ONE 제목 입력 ─────────────────────────────────────────
     def _inject_title(self, title: str):
-        """제목 입력 (메인 문서 내)"""
-        selectors = [
-            "textarea.se-title-text",
-            "textarea[placeholder*='제목']",
-            ".se-title-text",
-            "input[placeholder*='제목']",
-        ]
-        for sel in selectors:
-            els = self.driver.find_elements(By.CSS_SELECTOR, sel)
-            if els:
-                el = els[0]
-                el.click()
-                time.sleep(0.3)
-                el.send_keys(Keys.CONTROL + "a")
-                el.send_keys(Keys.DELETE)
-                time.sleep(0.2)
-                for char in title:
-                    el.send_keys(char)
-                    time.sleep(random.uniform(0.01, 0.04))
-                print(f"  제목 입력 완료: {title[:40]}...")
+        """SE ONE 제목 입력 — panels 닫기 → scroll top → ActionChains click+send_keys"""
+        title = title.replace('\xa0', ' ').replace('​', '').strip()
+
+        try:
+            ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
+            time.sleep(0.3)
+        except Exception:
+            pass
+
+        self.driver.execute_script("window.scrollTo(0, 0);")
+        time.sleep(0.4)
+
+        try:
+            el = WebDriverWait(self.driver, 10).until(
+                EC.visibility_of_element_located((By.CSS_SELECTOR, "div.se-title-text"))
+            )
+        except Exception:
+            print("  [경고] 제목 div 못 찾음")
+            return False
+
+        self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+        time.sleep(0.3)
+
+        def _actual():
+            return (self.driver.execute_script(
+                "var e=document.querySelector('div.se-title-text'); return e?e.innerText:'';"
+            ) or "").replace('\xa0', ' ').strip()
+
+        # Strategy A: ActionChains click → Ctrl+A → send_keys (to active element)
+        try:
+            ActionChains(self.driver).move_to_element(el).click().perform()
+            time.sleep(0.4)
+            ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('a').key_up(Keys.CONTROL).perform()
+            time.sleep(0.2)
+            ActionChains(self.driver).send_keys(title).perform()
+            time.sleep(0.5)
+            if title[:6] in _actual():
+                print(f"  제목 입력 완료 (ActionChains): {title[:50]}")
                 return True
-        print("  [경고] 제목 입력 필드를 찾지 못했습니다.")
+        except Exception as e:
+            print(f"  제목 ActionChains 실패: {e}")
+
+        # Strategy B: JS execCommand fallback
+        try:
+            ActionChains(self.driver).move_to_element(el).click().perform()
+            time.sleep(0.3)
+            self.driver.execute_script("""
+                var el = document.querySelector('div.se-title-text');
+                if (!el) return;
+                document.execCommand('selectAll', false, null);
+                document.execCommand('delete', false, null);
+                document.execCommand('insertText', false, arguments[0]);
+            """, title)
+            time.sleep(0.4)
+            if title[:6] in _actual():
+                print(f"  제목 입력 완료 (execCommand): {title[:50]}")
+                return True
+        except Exception as e:
+            print(f"  제목 execCommand 실패: {e}")
+
+        print(f"  [경고] 제목 입력 실패 (현재값: '{_actual()[:30]}')")
         return False
 
-    def _inject_body_in_iframe(self, iframe, html: str) -> bool:
-        """iframe 내부 SE ONE 에디터에 HTML 주입"""
+    # ── SE ONE 본문 주입 (clipboard paste) ──────────────────────
+    def _inject_body_via_paste(self, html: str) -> bool:
+        """임시 탭 HTML 복사 → SE ONE 본문 클릭 → Ctrl+V 붙여넣기"""
+        import tempfile, os as _os, re as _re
+        tmp_path = None
+        orig_handle = self.driver.current_window_handle
         try:
-            self.driver.switch_to.frame(iframe)
+            # base64 이미지 제거
+            html_small = _re.sub(r'src="data:image/[^"]{100,}"', 'src=""', html)
+
+            # 1. 임시 HTML 파일 생성 + 새 탭에서 열기
+            tmp = tempfile.NamedTemporaryFile(suffix='.html', delete=False, mode='w', encoding='utf-8')
+            tmp.write(f"<html><body>{html_small}</body></html>")
+            tmp.close()
+            tmp_path = tmp.name.replace('\\', '/')
+
+            self.driver.switch_to.new_window('tab')
+            self.driver.get(f'file:///{tmp_path}')
+            time.sleep(2)
+
+            # 2. Ctrl+A → Ctrl+C
+            body = self.driver.find_element(By.TAG_NAME, 'body')
+            body.click()
+            time.sleep(0.3)
+            ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('a').key_up(Keys.CONTROL).perform()
+            time.sleep(0.4)
+            ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('c').key_up(Keys.CONTROL).perform()
+            time.sleep(0.4)
+
+            # 3. 탭 닫기 후 에디터 복귀
+            self.driver.get('about:blank')
+            time.sleep(0.3)
+            self.driver.close()
+            self.driver.switch_to.window(orig_handle)
             time.sleep(1)
+            print("  클립보드 복사 완료, 에디터 복귀")
 
-            # contenteditable 요소 찾기
-            candidates = self.driver.find_elements(
-                By.CSS_SELECTOR, ".se-content, [contenteditable='true']"
-            )
-            if not candidates:
-                self.driver.switch_to.default_content()
-                return False
+            # 4. SE ONE 본문 영역 클릭 (여러 선택자 순서대로 시도)
+            clicked = False
+            selectors = [
+                '.se-placeholder',                    # SE ONE 빈 에디터 placeholder
+                '.se-text-paragraph',                  # SE ONE 텍스트 단락
+                '.se-section-content',                 # SE ONE 섹션 내용
+                '[contenteditable][data-placeholder]', # data-placeholder 있는 contenteditable
+                '.se-component',                       # SE ONE 컴포넌트
+            ]
+            for sel in selectors:
+                target = self.driver.execute_script(f"""
+                    var el = document.querySelector('{sel}');
+                    if (!el) return null;
+                    var r = el.getBoundingClientRect();
+                    if (r.width > 5 && r.height > 0 && r.top >= 0 && r.top < window.innerHeight)
+                        return el;
+                    return null;
+                """)
+                if target:
+                    try:
+                        self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", target)
+                        time.sleep(0.2)
+                        ActionChains(self.driver).move_to_element(target).click().perform()
+                        time.sleep(0.3)
+                        active_cls = self.driver.execute_script("return document.activeElement.className;") or ""
+                        if 'title' not in active_cls.lower():
+                            print(f"  본문 클릭 완료 (selector='{sel}', active='{active_cls[:40]}')")
+                            clicked = True
+                            break
+                        else:
+                            print(f"  selector='{sel}' → title에 포커스됨, 다음 시도")
+                    except Exception as _e:
+                        print(f"  selector='{sel}' 클릭 실패: {str(_e)[:60]}")
 
-            editor = candidates[0]
-            self.driver.execute_script("arguments[0].focus();", editor)
-            time.sleep(0.5)
+            if not clicked:
+                # 최후 수단: 제목 아래 좌표 클릭
+                print("  [경고] SE ONE 본문 셀렉터 실패, 좌표 클릭 시도")
+                try:
+                    title_el = self.driver.find_element(By.CSS_SELECTOR, "div.se-title-text")
+                    self.driver.execute_script("arguments[0].scrollIntoView({block:'start'});", title_el)
+                    time.sleep(0.3)
+                    ActionChains(self.driver).move_to_element_with_offset(title_el, 0, 150).click().perform()
+                    time.sleep(0.3)
+                    print("  좌표 클릭 완료 (title+150px)")
+                except Exception as _e2:
+                    print(f"  좌표 클릭 실패: {_e2}")
 
-            # 기존 내용 전체 선택 후 삭제
-            self.driver.execute_script(
-                "document.execCommand('selectAll', false, null);"
-            )
-            time.sleep(0.2)
+            # 5. Ctrl+A → Ctrl+V 붙여넣기
+            ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('a').key_up(Keys.CONTROL).perform()
+            time.sleep(0.3)
+            ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
+            time.sleep(3)
 
-            # HTML 삽입
-            result = self.driver.execute_script(
-                "return document.execCommand('insertHTML', false, arguments[0]);",
-                html
-            )
-            time.sleep(0.5)
+            self.driver.save_screenshot("debug_after_paste.png")
 
-            if not result:
-                # execCommand 실패 시 innerHTML 직접 주입
-                self.driver.execute_script("""
-                    arguments[0].innerHTML = arguments[1];
-                    arguments[0].dispatchEvent(new InputEvent('input', {bubbles: true}));
-                """, editor, html)
-
-            # 변경 사항 확인
-            content_len = self.driver.execute_script(
-                "return arguments[0].innerText.length;", editor
-            )
-            self.driver.switch_to.default_content()
-            print(f"  본문 주입 완료 (약 {content_len}자)")
-            return content_len > 50
+            # 붙여넣기 결과 확인 — SE ONE placeholder 숨김 여부 + 컴포넌트 수로 판단
+            result = self.driver.execute_script("""
+                var ph = document.querySelector('.se-placeholder');
+                if (ph) {
+                    var s = window.getComputedStyle(ph);
+                    if (s.display === 'none' || s.visibility === 'hidden' || ph.offsetHeight === 0)
+                        return {ok: true, reason: 'placeholder hidden'};
+                } else {
+                    return {ok: true, reason: 'no placeholder'};
+                }
+                var comps = document.querySelectorAll('.se-component');
+                if (comps.length > 3) return {ok: true, reason: 'components=' + comps.length};
+                var body = document.querySelector('.se-body');
+                if (body) {
+                    var txt = (body.innerText || '').replace(/^.+?\n/, '').trim();
+                    if (txt.length > 100) return {ok: true, reason: 'text=' + txt.length};
+                }
+                return {ok: false, reason: 'placeholder visible, components=' + comps.length};
+            """)
+            ok = result.get('ok', False) if result else False
+            reason = result.get('reason', '?') if result else '?'
+            print(f"  붙여넣기 결과: {'성공' if ok else '실패'} ({reason})")
+            return ok
 
         except Exception as e:
-            print(f"  iframe 본문 주입 오류: {e}")
+            print(f"  paste 주입 오류: {e}")
             try:
-                self.driver.switch_to.default_content()
+                if self.driver.current_window_handle != orig_handle:
+                    self.driver.get('about:blank')
+                    time.sleep(0.3)
+                    self.driver.close()
+                    self.driver.switch_to.window(orig_handle)
             except Exception:
                 pass
             return False
+        finally:
+            if tmp_path and _os.path.exists(tmp_path):
+                try:
+                    _os.unlink(tmp_path)
+                except Exception:
+                    pass
 
-    def _inject_body(self, html: str) -> bool:
-        """SE ONE 에디터에 본문 HTML 주입 (iframe 순회)"""
-        iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
-        print(f"  iframe {len(iframes)}개 발견, SE ONE 에디터 탐색 중...")
+    def _inject_body_via_js_html(self, html: str) -> bool:
+        """SE ONE 본문에 innerHTML 직접 주입 (paste 실패 시 fallback)"""
+        try:
+            result = self.driver.execute_script("""
+                var editor = document.querySelector('.se-content[contenteditable]')
+                           || document.querySelector('.se-content[contenteditable="true"]');
+                if (!editor) {
+                    var all = Array.from(document.querySelectorAll('[contenteditable]'));
+                    for (var e of all) {
+                        if (e.getAttribute('contenteditable') === 'false') continue;
+                        var cls = e.className || '';
+                        if (cls.includes('title') || cls.includes('Title')) continue;
+                        editor = e; break;
+                    }
+                }
+                if (!editor) return 'not found';
+                editor.focus();
+                editor.innerHTML = arguments[0];
+                editor.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:''}));
+                editor.dispatchEvent(new Event('change', {bubbles:true}));
+                var txt = (editor.innerText || '').trim();
+                return 'ok:cls=' + (editor.className||'(empty)') + ':len=' + txt.length + ':tag=' + editor.tagName;
+            """, html)
+            print(f"  본문 innerHTML 주입: {result}")
+            if result and result.startswith('ok'):
+                time.sleep(1)
+                self.driver.save_screenshot("debug_body_injected.png")
+                return True
+            return False
+        except Exception as e:
+            print(f"  본문 innerHTML 오류: {e}")
+            return False
 
-        for i, iframe in enumerate(iframes):
-            src = iframe.get_attribute("src") or ""
-            cls = iframe.get_attribute("class") or ""
-            if "se" in src.lower() or "se" in cls.lower() or "editor" in cls.lower() or not src:
-                print(f"  iframe[{i}] 시도 중 (class={cls[:40]})")
-                if self._inject_body_in_iframe(iframe, html):
-                    return True
-                # 이전 상태로 복귀 후 다음 iframe 시도
-                iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
-
-        # 메인 문서 내 contenteditable 시도 (iframe 아닌 경우)
-        editors = self.driver.find_elements(
-            By.CSS_SELECTOR, ".se-content[contenteditable='true'], [contenteditable='true']"
-        )
-        if editors:
-            editor = editors[0]
-            self.driver.execute_script("arguments[0].focus();", editor)
-            time.sleep(0.3)
-            self.driver.execute_script(
-                "document.execCommand('selectAll', false, null);"
-            )
-            self.driver.execute_script(
-                "document.execCommand('insertHTML', false, arguments[0]);",
-                html
-            )
-            print("  메인 문서 에디터에 본문 주입 완료")
-            return True
-
-        print("  [경고] SE ONE 에디터를 찾지 못했습니다.")
-        return False
-
+    # ── 태그 입력 ────────────────────────────────────────────────
     def _inject_tags(self, tags: list):
-        """태그 입력"""
+        """태그 입력 — 페이지 하단 스크롤 후 태그 input 탐색"""
         if not tags:
             return
-        selectors = [
-            "input[placeholder*='태그']",
-            ".tag-input input",
-            "#SE-tagInput",
-            ".HashTag input",
-        ]
-        tag_input = None
-        for sel in selectors:
-            els = self.driver.find_elements(By.CSS_SELECTOR, sel)
-            if els:
-                tag_input = els[0]
-                break
+
+        # 페이지 하단으로 스크롤하여 태그 입력 필드 노출
+        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(1)
+
+        tag_input = self.driver.execute_script("""
+            var inputs = Array.from(document.querySelectorAll('input'));
+            for (var inp of inputs) {
+                var ph = (inp.getAttribute('placeholder') || '').toLowerCase();
+                var cls = (inp.className || '').toLowerCase();
+                var nm  = (inp.getAttribute('name') || '').toLowerCase();
+                if (ph.includes('태그') || ph.includes('tag') ||
+                    cls.includes('tag') || nm.includes('tag')) {
+                    return inp;
+                }
+            }
+            return null;
+        """)
+
+        if not tag_input:
+            tag_input = self.driver.execute_script("""
+                var labels = Array.from(document.querySelectorAll('label, span, div'));
+                for (var el of labels) {
+                    if ((el.textContent || '').trim() === '태그') {
+                        var parent = el.closest('div, section, form');
+                        if (parent) {
+                            var inp = parent.querySelector('input');
+                            if (inp) return inp;
+                        }
+                    }
+                }
+                return null;
+            """)
 
         if not tag_input:
             print("  태그 입력 필드를 찾지 못했습니다 (건너뜀)")
             return
 
+        self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", tag_input)
+        time.sleep(0.5)
+
         for tag in tags[:10]:
             try:
-                tag_input.click()
+                ActionChains(self.driver).move_to_element(tag_input).click().perform()
                 time.sleep(0.3)
-                tag_input.send_keys(tag)
+                ActionChains(self.driver).send_keys(tag).perform()
                 time.sleep(0.3)
-                tag_input.send_keys(Keys.RETURN)
+                ActionChains(self.driver).send_keys(Keys.RETURN).perform()
                 time.sleep(0.3)
                 print(f"  태그 추가: #{tag}")
             except Exception as e:
                 print(f"  태그 '{tag}' 추가 실패: {e}")
 
+    # ── 발행 / 임시저장 ──────────────────────────────────────────
     def _click_publish_or_draft(self) -> str:
-        """
-        발행 또는 임시저장 버튼 클릭 후 게시글 URL 반환
-        POST_STATUS=publish  → 발행
-        POST_STATUS=draft    → 임시저장
-        """
+        """발행 또는 임시저장"""
         is_publish = self.post_status == "publish"
-        action_text = "발행" if is_publish else "임시저장"
 
-        # 발행/임시저장 버튼 탐색
-        btn_selectors = [
-            f"button[class*='publish']",
-            f"button[class*='Publish']",
-            "button[class*='save']",
-            "button[class*='Save']",
-            f"//button[contains(text(),'{action_text}')]",
-        ]
+        if not is_publish:
+            if IS_WINDOWS and not self.headless:
+                print("  임시저장 중 (Win32 Ctrl+S)...")
+                import subprocess as _sp2
+                win2 = self.driver.get_window_position()
+                chrome_ui_h2 = self.driver.execute_script("return window.outerHeight - window.innerHeight;")
+                sx2 = win2['x'] + 640
+                sy2 = win2['y'] + chrome_ui_h2 + 320
+                ps_save = f"""
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public class U32Save {{
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, int dx, int dy, uint dwData, IntPtr dwExtraInfo);
+    [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, IntPtr extra);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int cmd);
+}}
+'@
+$chrome = Get-Process -Name "chrome" -ErrorAction SilentlyContinue | Where-Object {{ $_.MainWindowHandle -ne 0 }} | Select-Object -First 1
+if ($chrome) {{
+    [U32Save]::ShowWindow($chrome.MainWindowHandle, 9)
+    [U32Save]::SetForegroundWindow($chrome.MainWindowHandle)
+    Start-Sleep -Milliseconds 400
+}}
+[U32Save]::SetCursorPos({sx2}, {sy2})
+Start-Sleep -Milliseconds 150
+[U32Save]::mouse_event(2, 0, 0, 0, [IntPtr]::Zero)
+Start-Sleep -Milliseconds 80
+[U32Save]::mouse_event(4, 0, 0, 0, [IntPtr]::Zero)
+Start-Sleep -Milliseconds 400
+[U32Save]::keybd_event(0x11, 0, 0, [IntPtr]::Zero)
+Start-Sleep -Milliseconds 60
+[U32Save]::keybd_event(0x53, 0, 0, [IntPtr]::Zero)
+Start-Sleep -Milliseconds 60
+[U32Save]::keybd_event(0x53, 0, 2, [IntPtr]::Zero)
+Start-Sleep -Milliseconds 60
+[U32Save]::keybd_event(0x11, 0, 2, [IntPtr]::Zero)
+"""
+                _sp2.run(['powershell', '-NonInteractive', '-Command', ps_save], capture_output=True, timeout=20)
+            else:
+                print("  임시저장 중 (Selenium Ctrl+S)...")
+                self.driver.execute_script("""
+                    var ed = document.querySelector('.se-content[contenteditable]')
+                             || document.querySelector('[contenteditable="true"]');
+                    if (ed) { ed.focus(); }
+                """)
+                time.sleep(0.3)
+                ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('s').key_up(Keys.CONTROL).perform()
 
+            time.sleep(5)
+            self.driver.save_screenshot("debug_after_save.png")
+            post_url = self.driver.current_url
+            print(f"  임시저장 완료: {post_url}")
+            return post_url
+
+        # 발행: "글 올리기" 또는 "발행" 버튼 탐색
+        publish_texts = ["글 올리기", "발행", "Publish", "공개발행"]
         btn = None
-        for sel in btn_selectors:
-            try:
-                if sel.startswith("//"):
-                    els = self.driver.find_elements(By.XPATH, sel)
-                else:
-                    els = self.driver.find_elements(By.CSS_SELECTOR, sel)
-                if els:
-                    # 텍스트로 재필터링
-                    for el in els:
-                        if action_text in el.text or not el.text:
-                            btn = el
-                            break
-                    if btn:
-                        break
-            except Exception:
-                pass
 
-        # 텍스트 전체 탐색 (fallback)
-        if not btn:
-            all_btns = self.driver.find_elements(By.TAG_NAME, "button")
-            for b in all_btns:
-                if action_text in (b.text or ""):
-                    btn = b
-                    break
+        all_btns = self.driver.find_elements(By.TAG_NAME, "button")
+        print(f"  [발행] 버튼 {len(all_btns)}개 탐색 중...")
+        for b in all_btns:
+            txt = (b.text or "").strip()
+            if any(t in txt for t in publish_texts):
+                btn = b
+                print(f"  발행 버튼 발견: '{txt}'")
+                break
 
         if not btn:
-            print(f"  [경고] '{action_text}' 버튼을 찾지 못했습니다.")
-            # 현재 URL 반환 (부분 성공)
+            print("  [경고] 발행 버튼을 찾지 못해 Ctrl+Enter 시도...")
+            ActionChains(self.driver).key_down(Keys.CONTROL).send_keys(Keys.RETURN).key_up(Keys.CONTROL).perform()
+            time.sleep(3)
             return self.driver.current_url
 
         btn.click()
-        time.sleep(3)
+        time.sleep(3)  # 발행 설정 패널 애니메이션 대기
 
-        # 발행 확인 팝업이 뜨는 경우 처리
+        # 발행 설정 패널의 "✔ 발행" 확인 버튼 클릭
+        confirmed = False
         try:
-            confirm_btns = self.driver.find_elements(
-                By.XPATH, "//button[contains(text(),'확인') or contains(text(),'발행')]"
+            all_publish = self.driver.find_elements(By.TAG_NAME, "button")
+            publish_btns = [b for b in all_publish if '발행' in (b.text or '')]
+            print(f"  '발행' 텍스트 포함 버튼: {len(publish_btns)}개 → {[b.text.strip()[:15] for b in publish_btns]}")
+            if len(publish_btns) >= 2:
+                confirm_btn = publish_btns[-1]
+                print(f"  발행 확인 클릭: '{confirm_btn.text.strip()}'")
+                self.driver.execute_script("arguments[0].click();", confirm_btn)
+                confirmed = True
+                time.sleep(5)
+            elif len(publish_btns) == 1:
+                time.sleep(2)
+                all_publish2 = self.driver.find_elements(By.TAG_NAME, "button")
+                publish_btns2 = [b for b in all_publish2 if '발행' in (b.text or '')]
+                print(f"  재탐색: {len(publish_btns2)}개")
+                if len(publish_btns2) >= 2:
+                    self.driver.execute_script("arguments[0].click();", publish_btns2[-1])
+                    confirmed = True
+                    time.sleep(5)
+        except Exception as e:
+            print(f"  발행 확인 버튼 오류: {e}")
+
+        if not confirmed:
+            print("  [경고] 발행 확인 버튼 못 찾음, 현재 URL 반환")
+
+        # 발행 후 URL 변경 대기 (postwrite → 실제 게시글 URL)
+        try:
+            WebDriverWait(self.driver, 15).until(
+                lambda d: "postwrite" not in d.current_url
             )
-            if confirm_btns:
-                confirm_btns[-1].click()
-                time.sleep(3)
         except Exception:
             pass
 
@@ -443,53 +638,73 @@ class NaverPublisher:
         print(f"  게시글 URL: {post_url}")
         return post_url
 
-    # ── 이미지 업로드 (선택) ────────────────────────────────────
-    def _upload_image_to_naver(self, image_url: str) -> str:
-        """
-        Pexels 등 외부 이미지를 임시 다운로드 후 네이버에 업로드.
-        성공하면 네이버 CDN URL 반환, 실패하면 원본 URL 반환.
-        """
-        if not image_url:
-            return ""
+    # ── SE ONE 차트 이미지 업로드 ────────────────────────────────
+    def _insert_chart_image(self, chart_path: str) -> bool:
+        """SE ONE 이미지 버튼으로 차트 PNG 업로드 삽입"""
+        if not chart_path or not os.path.exists(chart_path):
+            return False
+        abs_path = str(Path(chart_path).resolve())
         try:
-            resp = requests.get(image_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-            if resp.status_code != 200:
-                return image_url
+            img_btn = self.driver.execute_script("""
+                var btns = Array.from(document.querySelectorAll('button'));
+                for (var b of btns) {
+                    var lbl = (b.getAttribute('aria-label') || b.getAttribute('title') || '').toLowerCase();
+                    var cls = (b.className || '').toLowerCase();
+                    if (lbl.includes('사진') || lbl.includes('이미지') ||
+                        cls.includes('photo') || cls.includes('se-image')) {
+                        var r = b.getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0) return b;
+                    }
+                }
+                return null;
+            """)
+            if not img_btn:
+                print("  이미지 업로드 버튼 못 찾음 (건너뜀)")
+                return False
 
-            suffix = ".jpg"
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                tmp.write(resp.content)
-                tmp_path = tmp.name
-
-            # 사진 추가 버튼 클릭
-            photo_btns = self.driver.find_elements(
-                By.XPATH,
-                "//button[contains(@class,'photo') or contains(text(),'사진')]"
-            )
-            if not photo_btns:
-                return image_url
-
-            photo_btns[0].click()
+            self.driver.execute_script("arguments[0].click();", img_btn)
             time.sleep(2)
+            self.driver.save_screenshot("debug_image_modal.png")
 
-            # 파일 선택 input
             file_inputs = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
-            if file_inputs:
-                file_inputs[0].send_keys(tmp_path)
-                time.sleep(4)
+            if not file_inputs:
+                ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
+                print("  파일 input 없음 (건너뜀)")
+                return False
 
-            import os as _os
-            _os.unlink(tmp_path)
-            return ""  # 업로드 후 URL은 별도 추출 필요 (구현 복잡)
+            file_inputs[0].send_keys(abs_path)
+            time.sleep(6)
+
+            confirm_btn = self.driver.execute_script("""
+                var btns = Array.from(document.querySelectorAll('button'));
+                for (var b of btns) {
+                    var txt = b.textContent.trim();
+                    if (txt === '확인' || txt === '완료' || txt === '삽입' || txt === '업로드') {
+                        var r = b.getBoundingClientRect();
+                        if (r.width > 0) return b;
+                    }
+                }
+                return null;
+            """)
+            if confirm_btn:
+                self.driver.execute_script("arguments[0].click();", confirm_btn)
+                time.sleep(3)
+
+            self.driver.save_screenshot("debug_after_image.png")
+            print(f"  차트 이미지 업로드 완료: {os.path.basename(chart_path)}")
+            return True
         except Exception as e:
-            print(f"  이미지 업로드 오류 (외부 URL 사용): {e}")
-            return image_url
+            print(f"  차트 이미지 업로드 오류: {e}")
+            try:
+                ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
+            except Exception:
+                pass
+            return False
 
     # ── 메인 발행 ───────────────────────────────────────────────
     def publish(self, article: dict, stock: dict) -> str:
         """
         네이버 블로그에 주식 분석 글 발행.
-        chart_b64 를 data URL로 임베드해서 별도 업로드 불필요.
         반환값: 게시글 URL (실패 시 빈 문자열)
         """
         if not self.blog_id:
@@ -505,33 +720,74 @@ class NaverPublisher:
             write_url = WRITE_URL.format(blog_id=self.blog_id)
             print(f"  글쓰기 페이지 이동: {write_url}")
             self.driver.get(write_url)
-            time.sleep(4)
+            time.sleep(6)
 
-            if not self._wait_for_editor(timeout=30):
+            if not self._wait_for_editor(timeout=40):
                 print("  [경고] 에디터 로딩 타임아웃. 계속 시도합니다...")
 
-            time.sleep(2)
+            time.sleep(3)
 
-            # 제목 입력
-            self._inject_title(article["title"])
+            # CHART_IMAGE placeholder 제거 (SE ONE이 data: URL을 차단하므로 업로드 방식 사용)
+            import re as _re
+            content_html = article["content"]
+            content_html = _re.sub(
+                r'<p[^>]*>\s*<img[^>]*src="CHART_IMAGE"[^>]*/>\s*</p>\s*'
+                r'<p[^>]*>[^<]*차트[^<]*</p>',
+                '', content_html
+            )
+            content_html = content_html.replace('src="CHART_IMAGE"', 'src=""')
+
+            # 1. 임시저장 팝업 닫기 ('취소' JS 클릭)
+            dismissed = self.driver.execute_script("""
+                var btns = Array.from(document.querySelectorAll('button'));
+                for (var b of btns) {
+                    if (b.textContent.trim() === '취소') { b.click(); return true; }
+                }
+                return false;
+            """)
+            if dismissed:
+                print("  임시저장 팝업 닫음 (취소 JS 클릭)")
+                time.sleep(2.5)
+
+            # 2. 도움말 패널 닫기 (overlay 제거)
+            help_closed = self.driver.execute_script("""
+                var btns = Array.from(document.querySelectorAll('button'));
+                for (var b of btns) {
+                    var rect = b.getBoundingClientRect();
+                    if (rect.width <= 0 || rect.height <= 0) continue;
+                    var lbl = b.getAttribute('aria-label') || '';
+                    var txt = b.textContent.trim();
+                    if ((lbl === '닫기' || txt === '닫기') && rect.width <= 30) {
+                        b.click();
+                        return true;
+                    }
+                }
+                return false;
+            """)
+            if help_closed:
+                print("  도움말 패널 닫음")
+                time.sleep(1.5)
+
+            self.driver.save_screenshot("debug_editor.png")
             time.sleep(1)
 
-            # 차트 이미지를 base64 data URL로 임베드
-            import re
-            content_html = article["content"]
-            chart_b64 = stock.get("chart_b64", "")
-            if chart_b64:
-                data_url = f"data:image/png;base64,{chart_b64}"
-                content_html = content_html.replace("CHART_IMAGE", data_url)
-                print("  차트 이미지 base64 임베드 완료")
-            else:
-                # 차트 없으면 figure 태그 제거
-                content_html = re.sub(
-                    r'<figure[^>]*>.*?</figure>', '', content_html, flags=re.DOTALL
-                )
+            # 3. 제목 입력 — 에디터가 깨끗한 상태에서 먼저 입력
+            self._inject_title(article["title"])
+            time.sleep(0.5)
 
-            # 본문 입력
-            self._inject_body(content_html)
+            # 4. 본문 주입 — SE ONE placeholder 클릭 → Ctrl+V 붙여넣기
+            body_ok = self._inject_body_via_paste(content_html)
+            if not body_ok:
+                print("  paste 실패, innerHTML fallback 시도")
+                self._inject_body_via_js_html(content_html)
+            time.sleep(2)
+
+            # 5. 차트 이미지 SE ONE 업로드 (data: URL 차단으로 clipboard 방식 불가)
+            chart_file = stock.get("chart_file", "")
+            if chart_file:
+                self._insert_chart_image(chart_file)
+                time.sleep(1)
+
             time.sleep(1)
 
             # 태그 입력

@@ -41,32 +41,65 @@ HEADERS = {
 
 # 스크래핑 실패 시 fallback 종목 목록
 FALLBACK_STOCKS = [
-    {"name": "삼성전자",      "code": "005930"},
-    {"name": "SK하이닉스",    "code": "000660"},
-    {"name": "LG에너지솔루션","code": "373220"},
-    {"name": "현대차",        "code": "005380"},
-    {"name": "NAVER",        "code": "035420"},
-    {"name": "카카오",        "code": "035720"},
+    {"name": "삼성전자",       "code": "005930"},
+    {"name": "SK하이닉스",     "code": "000660"},
+    {"name": "LG에너지솔루션", "code": "373220"},
+    {"name": "현대차",         "code": "005380"},
+    {"name": "NAVER",          "code": "035420"},
+    {"name": "카카오",         "code": "035720"},
     {"name": "삼성바이오로직스","code": "207940"},
-    {"name": "KB금융",        "code": "105560"},
-    {"name": "POSCO홀딩스",   "code": "005490"},
-    {"name": "셀트리온",      "code": "068270"},
+    {"name": "KB금융",         "code": "105560"},
+    {"name": "POSCO홀딩스",    "code": "005490"},
+    {"name": "셀트리온",       "code": "068270"},
+    {"name": "기아",           "code": "000270"},
+    {"name": "삼성SDI",        "code": "006400"},
+    {"name": "LG화학",         "code": "051910"},
+    {"name": "SK이노베이션",   "code": "096770"},
+    {"name": "현대모비스",     "code": "012330"},
+    {"name": "삼성물산",       "code": "028260"},
+    {"name": "LG전자",         "code": "066570"},
+    {"name": "신한지주",       "code": "055550"},
+    {"name": "하나금융지주",   "code": "086790"},
+    {"name": "우리금융지주",   "code": "316140"},
+    {"name": "카카오뱅크",     "code": "323410"},
+    {"name": "크래프톤",       "code": "259960"},
+    {"name": "엔씨소프트",     "code": "036570"},
+    {"name": "넷마블",         "code": "251270"},
+    {"name": "두산에너빌리티", "code": "034020"},
+    {"name": "한국전력",       "code": "015760"},
+    {"name": "CJ제일제당",     "code": "097950"},
+    {"name": "아모레퍼시픽",   "code": "090430"},
+    {"name": "LG생활건강",     "code": "051900"},
+    {"name": "S-Oil",          "code": "010950"},
+    {"name": "삼성생명",       "code": "032830"},
+    {"name": "한국항공우주",   "code": "047810"},
 ]
 
 
-# ── 네이버 금융 인기 종목 스크래핑 ───────────────────────────
-def _scrape_hot_stocks(n: int = 10) -> list:
-    url = "https://finance.naver.com/sise/lastsearch2.naver"
+# ── 네이버 금융 종목 스크래핑 공통 함수 ──────────────────────
+# ETN/ETF/파생상품 필터 키워드 (yfinance 없고 블로그 주제로 부적합)
+_SKIP_KEYWORDS = (
+    'ETN', 'ETF', 'KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO',
+    '인버스', '레버리지', '선물', '스팩', 'SPAC', '리츠', 'REIT',
+    'USD', 'WTI', 'VIX', '2X', '2배', 'N2 ',
+)
+
+
+def _is_valid_stock(name: str, code: str) -> bool:
+    """파생상품/ETF/ETN 종목 제외"""
+    up = name.upper()
+    return not any(kw.upper() in up for kw in _SKIP_KEYWORDS)
+
+
+def _scrape_naver_table(url: str, label: str, n: int = 10) -> list:
     try:
         resp = requests.get(url, headers=HEADERS, timeout=10)
         resp.encoding = "euc-kr"
         soup = BeautifulSoup(resp.text, "html.parser")
-
         stocks = []
         table = soup.find("table", class_="type_2")
         if not table:
             return []
-
         for tr in table.find_all("tr"):
             a = tr.find("a", href=lambda h: h and "code=" in h)
             if not a:
@@ -74,15 +107,39 @@ def _scrape_hot_stocks(n: int = 10) -> list:
             code = a["href"].split("code=")[-1].strip()
             name = a.text.strip()
             if code and name and len(code) == 6 and code.isdigit():
-                stocks.append({"name": name, "code": code})
+                if _is_valid_stock(name, code):
+                    stocks.append({"name": name, "code": code})
             if len(stocks) >= n:
                 break
-
-        print(f"  네이버 인기 종목 {len(stocks)}개 수집: {[s['name'] for s in stocks[:5]]}")
+        print(f"  {label} {len(stocks)}개 수집: {[s['name'] for s in stocks[:5]]}")
         return stocks
     except Exception as e:
-        print(f"  네이버 스크래핑 오류: {e}")
+        print(f"  {label} 스크래핑 오류: {e}")
         return []
+
+
+def _scrape_hot_stocks(n: int = 10) -> list:
+    return _scrape_naver_table(
+        "https://finance.naver.com/sise/lastsearch2.naver", "인기검색 종목", n
+    )
+
+
+def _scrape_rise_stocks(n: int = 10) -> list:
+    return _scrape_naver_table(
+        "https://finance.naver.com/sise/sise_rise.naver", "급상승 종목", n
+    )
+
+
+def _scrape_fall_stocks(n: int = 10) -> list:
+    return _scrape_naver_table(
+        "https://finance.naver.com/sise/sise_fall.naver", "급하락 종목", n
+    )
+
+
+def _scrape_volume_stocks(n: int = 10) -> list:
+    return _scrape_naver_table(
+        "https://finance.naver.com/sise/sise_quant.naver", "거래량 급증 종목", n
+    )
 
 
 # ── yfinance 데이터 수집 ──────────────────────────────────────
@@ -139,7 +196,7 @@ def _generate_chart(stock: dict) -> tuple:
     code = stock["code"]
 
     fig, (ax1, ax2) = plt.subplots(
-        2, 1, figsize=(11, 7),
+        2, 1, figsize=(9, 5),
         gridspec_kw={"height_ratios": [3, 1]},
         facecolor="#0d1117"
     )
@@ -194,7 +251,7 @@ def _generate_chart(stock: dict) -> tuple:
     plt.tight_layout(pad=1.5)
 
     buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=150, bbox_inches="tight",
+    plt.savefig(buf, format="png", dpi=90, bbox_inches="tight",
                 facecolor="#0d1117")
     plt.close(fig)
     buf.seek(0)
@@ -214,23 +271,37 @@ def _generate_chart(stock: dict) -> tuple:
 class StockFinder:
     def get_hot_stock(self) -> dict:
         """
-        오늘 네이버페이 인기 종목 → yfinance 데이터 + 차트 반환.
-        이미 분석한 종목 중복 방지를 위해 logs 를 참조.
+        인기/급상승/급하락/거래량 종목 통합 → yfinance 데이터 + 차트 반환.
+        최근 20개 포스팅 종목 중복 방지.
         """
-        candidates = _scrape_hot_stocks(10)
+        hot     = _scrape_hot_stocks(10)
+        rise    = _scrape_rise_stocks(10)
+        fall    = _scrape_fall_stocks(10)
+        volume  = _scrape_volume_stocks(10)
+
+        # 소스별 합산 후 코드 기준 중복 제거 (앞 소스 우선)
+        seen = set()
+        candidates = []
+        for stock in hot + rise + fall + volume:
+            if stock["code"] not in seen:
+                seen.add(stock["code"])
+                candidates.append(stock)
+
         if not candidates:
-            print("  스크래핑 실패 → fallback 목록 사용")
+            print("  스크래핑 전체 실패 → fallback 목록 사용")
             candidates = FALLBACK_STOCKS.copy()
             random.shuffle(candidates)
 
-        # 최근 발행 종목 중복 방지
-        recent = self._recent_codes(3)
-
+        # 최근 20개 발행 종목 제외 (앞으로 정렬, 못 피하면 뒤에 배치)
+        recent = self._recent_codes(20)
         ordered = [c for c in candidates if c["code"] not in recent] + \
                   [c for c in candidates if c["code"] in recent]
 
-        for candidate in ordered[:6]:
+        for candidate in ordered[:15]:
             name, code = candidate["name"], candidate["code"]
+            if code in recent:
+                print(f"  '{name}({code})' — 최근 20개 이내 종목, 건너뜀")
+                continue
             print(f"  '{name}({code})' 데이터 수집 중...")
             data = _fetch_yfinance(code, name)
             if not data:
@@ -246,24 +317,40 @@ class StockFinder:
             print(f"  [OK] 차트 저장: {chart_path}")
             return data
 
+        # recent 필터 무시하고 재시도 (모든 종목이 최근 20개인 극단적 상황)
+        print("  [경고] 모든 후보가 최근 20개 이내 — recent 필터 해제 후 재시도")
+        for candidate in ordered[:5]:
+            name, code = candidate["name"], candidate["code"]
+            data = _fetch_yfinance(code, name)
+            if data:
+                png_bytes, b64, chart_path = _generate_chart(data)
+                data["chart_bytes"] = png_bytes
+                data["chart_b64"]   = b64
+                data["chart_file"]  = chart_path
+                return data
+
         raise RuntimeError("주식 데이터 수집 실패 (모든 후보 불가)")
 
     def _recent_codes(self, n: int) -> set:
         import json
-        codes = set()
+        entries = []
         log_dir = "logs"
         if not os.path.isdir(log_dir):
-            return codes
-        for fname in sorted(os.listdir(log_dir), reverse=True)[:2]:
+            return set()
+        for fname in sorted(os.listdir(log_dir), reverse=True)[:6]:
             try:
                 with open(os.path.join(log_dir, fname), encoding="utf-8") as f:
                     for line in f:
-                        entry = json.loads(line.strip())
-                        c = entry.get("stock_code")
-                        if c:
-                            codes.add(c)
-                        if len(codes) >= n:
-                            return codes
+                        line = line.strip()
+                        if not line:
+                            continue
+                        entry = json.loads(line)
+                        date  = entry.get("date", "")
+                        code  = entry.get("stock_code", "")
+                        if code:
+                            entries.append((date, code))
             except Exception:
                 pass
-        return codes
+        # 날짜 내림차순 정렬 후 최근 n개 코드만 반환
+        entries.sort(key=lambda x: x[0], reverse=True)
+        return {code for _, code in entries[:n]}
