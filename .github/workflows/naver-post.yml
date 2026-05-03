@@ -1,18 +1,18 @@
 name: Naver Auto Blog
 
 on:
-  workflow_dispatch:       # 수동 실행 (버튼 클릭)
+  workflow_dispatch:              # GitHub UI에서 버튼 클릭으로 즉시 실행
   schedule:
-    - cron: '0 1 * * 1,3,5'   # 월/수/금 오전 10시 KST (UTC+9 → UTC 01:00)
+    - cron: '0 1 * * 1,3,5'      # 월/수/금 오전 10시 KST (UTC 01:00)
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   PYTHONIOENCODING: utf-8
+  DISPLAY: :99                   # xvfb 가상 디스플레이 번호
 
 jobs:
   naver-post:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: 코드 체크아웃
@@ -29,8 +29,21 @@ jobs:
         with:
           chrome-version: stable
 
-      - name: 시스템 패키지 설치 (한글 폰트 + 클립보드)
-        run: sudo apt-get install -y fonts-nanum xclip && fc-cache -fv
+      - name: 시스템 패키지 설치 (한글 폰트 + 가상 디스플레이 + 클립보드)
+        run: |
+          sudo apt-get install -y \
+            fonts-nanum \
+            xvfb \
+            xclip \
+            x11-utils
+          fc-cache -fv
+          echo "패키지 설치 완료"
+
+      - name: 가상 디스플레이 시작 (xvfb)
+        run: |
+          Xvfb :99 -screen 0 1280x900x24 &
+          sleep 2
+          echo "xvfb 시작 완료 (DISPLAY=:99)"
 
       - name: 패키지 설치
         run: pip install -r requirements.txt
@@ -39,27 +52,37 @@ jobs:
         run: |
           mkdir -p cookies
           echo "${{ secrets.NAVER_COOKIES_B64 }}" | base64 -d > cookies/naver_cookies.json
-          echo "쿠키 파일 복원 완료 ($(wc -c < cookies/naver_cookies.json) bytes)"
+          echo "쿠키 복원 완료 ($(wc -c < cookies/naver_cookies.json) bytes)"
 
       - name: 네이버 블로그 자동 포스팅
         env:
-          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
-          NAVER_BLOG_ID:        ${{ secrets.NAVER_BLOG_ID }}
-          NAVER_USERNAME:       ${{ secrets.NAVER_USERNAME }}
-          NAVER_PASSWORD:       ${{ secrets.NAVER_PASSWORD }}
-          NAVER_CLIENT_ID:      ${{ secrets.NAVER_CLIENT_ID }}
-          NAVER_CLIENT_SECRET:  ${{ secrets.NAVER_CLIENT_SECRET }}
-          PEXELS_API_KEY:       ${{ secrets.PEXELS_API_KEY }}
-          POST_STATUS:          draft
-          HEADLESS:             "true"
+          ANTHROPIC_API_KEY:   ${{ secrets.ANTHROPIC_API_KEY }}
+          NAVER_BLOG_ID:       ${{ secrets.NAVER_BLOG_ID }}
+          NAVER_USERNAME:      ${{ secrets.NAVER_USERNAME }}
+          NAVER_PASSWORD:      ${{ secrets.NAVER_PASSWORD }}
+          POST_STATUS:         publish      # draft → publish 로 실제 발행
+          HEADLESS:            "false"      # xvfb 가상 디스플레이 사용 (클립보드 정상 동작)
         run: python main.py
+
+      - name: 발행 로그 업로드 (아티팩트)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-log-${{ github.run_number }}
+          path: |
+            logs/
+            debug_*.png
+          retention-days: 7
 
       - name: 실패 시 안내
         if: failure()
         run: |
           echo "========================================"
-          echo "포스팅 실패! 아래 사항을 확인하세요:"
-          echo "  1. NAVER_COOKIES_B64 만료 → 로컬에서 --login 후 --export-cookies 재실행"
+          echo "포스팅 실패! 확인 사항:"
+          echo "  1. NAVER_COOKIES_B64 만료"
+          echo "     → 로컬: python main.py --login"
+          echo "     → 로컬: python main.py --export-cookies"
+          echo "     → GitHub Secrets: NAVER_COOKIES_B64 업데이트"
           echo "  2. ANTHROPIC_API_KEY 확인"
           echo "  3. 네이버 계정 잠금 여부 확인"
           echo "========================================"
