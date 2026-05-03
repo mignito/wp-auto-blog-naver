@@ -396,8 +396,8 @@ class NaverPublisher:
                 if (comps.length > 3) return {ok: true, reason: 'components=' + comps.length};
                 var body = document.querySelector('.se-body');
                 if (body) {
-                    var txt = (body.innerText || '').replace(/^.+?[\r\n]/, '').trim();
-                    if (txt.length > 100) return {ok: true, reason: 'text=' + txt.length};
+                    var len = (body.innerText || '').trim().length;
+                    if (len > 100) return {ok: true, reason: 'text=' + len};
                 }
                 return {ok: false, reason: 'placeholder visible, components=' + comps.length};
             """)
@@ -815,9 +815,15 @@ Start-Sleep -Milliseconds 60
                 self._inject_body_via_js_html(content_html)
             time.sleep(2)
 
-            # 5. 차트 이미지 SE ONE 업로드 (data: URL 차단으로 clipboard 방식 불가)
+            # 5. 차트 이미지 SE ONE 업로드 — 커서를 문서 최상단으로 이동 후 삽입
             chart_file = stock.get("chart_file", "")
             if chart_file:
+                try:
+                    ActionChains(self.driver).key_down(Keys.CONTROL).send_keys(Keys.HOME).key_up(Keys.CONTROL).perform()
+                    time.sleep(0.5)
+                    print("  커서 최상단 이동 완료")
+                except Exception as _ce:
+                    print(f"  커서 이동 실패 (무시): {_ce}")
                 self._insert_chart_image(chart_file)
                 time.sleep(1)
 

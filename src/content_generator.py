@@ -210,35 +210,41 @@ class ContentGenerator:
         html += "</tbody></table>"
         return html
 
-    # ── [Haiku] 자극적 제목 생성 (4가지 패턴 강제) ──────────────
-    def _generate_title(self, stock: dict) -> str:
+    # ── [Haiku] 단기전망 요약 기반 제목 생성 ───────────────────
+    def _generate_title(self, stock: dict, chart_analysis: str = "") -> str:
         name = stock["name"]
         chg  = stock.get("change_pct", 0)
-        per  = stock.get("per")
 
-        valid = [
-            f"{name} 하락할 수밖에 없는 이유",
-            f"{name} 상승할 수밖에 없는 이유",
-            f"{name} 매도해야 하는 이유",
-            f"{name} 지금이 저점인 이유",
-        ]
+        # 차트 분석에서 핵심 텍스트 추출
+        context = ""
+        if chart_analysis:
+            plain = re.sub(r'<[^>]+>', ' ', chart_analysis)
+            context = re.sub(r'\s+', ' ', plain).strip()[:500]
+
         user = (
-            f"종목: {name}, 오늘 등락률: {chg:+.2f}%"
-            + (f", PER: {per:.1f}배" if per else "")
-            + "\n\n아래 4개 중 재무지표·등락률에 가장 어울리는 것 1개를 그대로 출력:\n"
-            f"1. {valid[0]}\n"
-            f"2. {valid[1]}\n"
-            f"3. {valid[2]}\n"
-            f"4. {valid[3]}\n\n"
-            "번호·따옴표 없이 선택한 문장만 출력."
+            f"종목명: {name}, 오늘 등락률: {chg:+.2f}%\n"
+            f"차트·투자 분석: {context}\n\n"
+            "위 분석 내용을 바탕으로 이 종목의 단기 전망을 한 문구로 요약하라.\n\n"
+            "출력 형식: {종목명} {단기전망 핵심내용}\n"
+            "조건:\n"
+            f"- 반드시 '{name}'으로 시작\n"
+            "- 핵심 이유·키워드 포함 (예: 원자재 급락에 따른 기술적 조정, 실적 개선 기대에 단기 상승여지)\n"
+            "- 전체 20자 내외\n"
+            "- 문장 부호·따옴표·날짜·번호 포함 금지\n"
+            "문구만 한 줄 출력."
         )
-        raw = self._call("주식 투자 분석가.", user, max_tokens=40)
-        title = next((p for p in valid if p in (raw or "")), None)
-        if not title:
-            title = valid[1] if chg >= 0 else valid[0]
+        raw = (self._call("주식 투자 애널리스트.", user, max_tokens=60) or "").strip()
 
-        date_str = datetime.now().strftime("'%y%m%d")
-        return f"{title}({date_str})"
+        # 종목명으로 시작하지 않으면 앞에 붙이기
+        if raw and not raw.startswith(name):
+            raw = f"{name} {raw}"
+
+        # fallback
+        if not raw or len(raw) < len(name) + 3:
+            raw = f"{name} {'단기 상승 흐름 지속 전망' if chg >= 0 else '단기 조정 가능성 주시'}"
+
+        date_str = datetime.now().strftime("%y%m%d")
+        return f"{raw}({date_str})"
 
     # ── [Haiku Vision] 차트 기술적 분석 ────────────────────────
     def _analyze_chart(self, chart_b64: str, stock: dict) -> str:
@@ -305,30 +311,17 @@ class ContentGenerator:
             "<p><strong>단기 촉매·리스크</strong>: 향후 주가에 영향을 줄 변수.</p>\n\n"
 
             "<h2>✅ 투자 포인트 (Bull vs Bear)</h2>\n"
-            "각 항목은 반드시 구체적 수치(%, 원, 배, 성장률)를 포함할 것.\n"
-            f"<table style='width:100%;border-collapse:collapse;margin:14px 0;'>\n"
-            f"<tr style='background:#e8f5e9;'>"
-            f"<th style='{td}width:22%;'>구분</th>"
-            f"<th style='{td}'>내용</th></tr>\n"
+            "각 항목은 반드시 구체적 수치(%, 원, 배, 성장률)를 포함. 표가 아닌 문단으로 작성.\n\n"
 
-            f"<tr><td style='{td}color:#1a7431;font-weight:bold;'>💚 강점 1</td>"
-            f"<td style='{td}'>실적·매출 성장성 — 수치(매출액, 영업이익, YoY %) 포함</td></tr>\n"
+            "<h3 style='color:#1a7431;'>💚 강점 (Bull)</h3>\n"
+            "<p><strong>① 실적·성장성</strong>: 매출액·영업이익 및 YoY 성장률 수치 포함하여 서술.</p>\n"
+            "<p><strong>② 밸류에이션</strong>: PER·PBR을 업종 평균과 비교하여 저평가 여부 수치로 서술.</p>\n"
+            "<p><strong>③ 기술적 지지 (차트 기반)</strong>: 이평선 정배열·주요 지지선·거래량 증가 등 매수 근거 서술.</p>\n\n"
 
-            f"<tr style='background:#f2faf2;'><td style='{td}color:#1a7431;font-weight:bold;'>💚 강점 2</td>"
-            f"<td style='{td}'>밸류에이션 매력 — PER/PBR 업종평균 대비 수치 포함</td></tr>\n"
-
-            f"<tr><td style='{td}color:#1a7431;font-weight:bold;'>💚 강점 3 (차트)</td>"
-            f"<td style='{td}'>차트 기술적 지지 — 이평선·지지선·거래량 등 차트 분석 기반 매수 포인트</td></tr>\n"
-
-            f"<tr style='background:#fff8f8;'><td style='{td}color:#b71c1c;font-weight:bold;'>🔴 리스크 1</td>"
-            f"<td style='{td}'>업종·거시 환경 리스크 — 금리·환율·경쟁 등 수치 포함</td></tr>\n"
-
-            f"<tr><td style='{td}color:#b71c1c;font-weight:bold;'>🔴 리스크 2</td>"
-            f"<td style='{td}'>실적 변동성·경쟁 리스크 — 매출 감소 시나리오 또는 경쟁사 대비</td></tr>\n"
-
-            f"<tr style='background:#fff8f8;'><td style='{td}color:#b71c1c;font-weight:bold;'>🔴 리스크 3 (차트)</td>"
-            f"<td style='{td}'>기술적 하방 리스크 — 지지선 이탈 시 손절 기준·하락 목표가</td></tr>\n"
-            "</table>\n\n"
+            "<h3 style='color:#b71c1c;'>🔴 리스크 (Bear)</h3>\n"
+            "<p><strong>① 업종·거시 환경</strong>: 금리·환율·원자재·경쟁 심화 등 구체적 수치와 함께 서술.</p>\n"
+            "<p><strong>② 실적 변동성</strong>: 매출 감소 가능 시나리오 또는 경쟁사 대비 열위 포인트 서술.</p>\n"
+            "<p><strong>③ 기술적 하방 (차트 기반)</strong>: 지지선 이탈 시 손절 기준가·하락 목표가 수치 포함 서술.</p>\n\n"
 
             "<h2>💼 투자 의견 및 전망</h2>\n"
             "<p><strong>밸류에이션</strong>: 현재 PER·PBR 수준 평가 및 업종 평균 대비 (수치 포함).</p>\n"
@@ -349,14 +342,14 @@ class ContentGenerator:
         price = stock.get("price", 0)
         chg   = stock.get("change_pct", 0)
 
-        print(f"  [1/4] 자극적 제목 생성 (Haiku)...")
-        title = self._generate_title(stock)
-
-        print(f"  [2/4] 차트 기술 분석 (Haiku Vision)...")
+        print(f"  [1/4] 차트 기술 분석 (Haiku Vision)...")
         chart_html = self._analyze_chart(stock["chart_b64"], stock)
 
-        print(f"  [3/4] 투자 리포트 작성 (Haiku, 차트 분석 반영)...")
+        print(f"  [2/4] 투자 리포트 작성 (Haiku, 차트 분석 반영)...")
         summary_html = self._write_summary(stock, chart_analysis=chart_html)
+
+        print(f"  [3/4] 제목 생성 (단기전망 요약)...")
+        title = self._generate_title(stock, chart_analysis=chart_html)
 
         print(f"  [4/4] 관련 글 크롤링 및 글 조립...")
         related_posts   = _fetch_related_posts()
@@ -402,15 +395,16 @@ class ContentGenerator:
         HR = '<div style="border-top:2px solid #eee;margin:24px 0;height:1px;overflow:hidden;"></div>'
 
         body = (
-            opinion_box
+            chart_figure                           # 차트 이미지 최상단
+            + f"\n{HR}\n"
+            + opinion_box
             + f"\n{HR}\n"
             + summary_html
             + f"\n{HR}\n"
             + f'<h2>📋 핵심 재무 지표</h2>\n'
             + finance_table
             + f"\n{HR}\n"
-            + f'<h2>📈 주가 차트 분석 (3개월)</h2>\n'
-            + chart_figure + "\n"
+            + f'<h2>📈 주가 차트 기술적 분석 (3개월)</h2>\n'
             + chart_html
         )
 
