@@ -396,7 +396,7 @@ class NaverPublisher:
                 if (comps.length > 3) return {ok: true, reason: 'components=' + comps.length};
                 var body = document.querySelector('.se-body');
                 if (body) {
-                    var txt = (body.innerText || '').replace(/^.+?\n/, '').trim();
+                    var txt = (body.innerText || '').replace(/^.+?[\r\n]/, '').trim();
                     if (txt.length > 100) return {ok: true, reason: 'text=' + txt.length};
                 }
                 return {ok: false, reason: 'placeholder visible, components=' + comps.length};
@@ -459,15 +459,28 @@ class NaverPublisher:
 
     # ── 태그 입력 ────────────────────────────────────────────────
     def _inject_tags(self, tags: list):
-        """태그 입력 — 페이지 하단 스크롤 후 태그 input 탐색"""
+        """태그 입력 — 페이지 하단 스크롤 후 태그 input/contenteditable 탐색"""
         if not tags:
             return
 
         # 페이지 하단으로 스크롤하여 태그 입력 필드 노출
         self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(1)
+        time.sleep(1.5)
 
         tag_input = self.driver.execute_script("""
+            // 1순위: SE ONE 태그 전용 input
+            var selectors = [
+                'input.se-tag-input',
+                'input[class*="tag"]',
+                'div[class*="tag"] input',
+                '.se-tag-field input',
+                '.tag-input input',
+            ];
+            for (var sel of selectors) {
+                var el = document.querySelector(sel);
+                if (el) return el;
+            }
+            // 2순위: placeholder에 '태그' 포함하는 모든 input
             var inputs = Array.from(document.querySelectorAll('input'));
             for (var inp of inputs) {
                 var ph = (inp.getAttribute('placeholder') || '').toLowerCase();
@@ -478,17 +491,28 @@ class NaverPublisher:
                     return inp;
                 }
             }
+            // 3순위: contenteditable 태그 영역 (SE ONE div 기반 태그)
+            var ces = Array.from(document.querySelectorAll('[contenteditable]'));
+            for (var ce of ces) {
+                var cls2 = (ce.className || '').toLowerCase();
+                var ph2  = (ce.getAttribute('data-placeholder') || '').toLowerCase();
+                if (cls2.includes('tag') || ph2.includes('태그') || ph2.includes('tag')) {
+                    return ce;
+                }
+            }
             return null;
         """)
 
         if not tag_input:
+            # 4순위: '태그' 텍스트 근처의 input/contenteditable
             tag_input = self.driver.execute_script("""
-                var labels = Array.from(document.querySelectorAll('label, span, div'));
-                for (var el of labels) {
-                    if ((el.textContent || '').trim() === '태그') {
-                        var parent = el.closest('div, section, form');
+                var all = Array.from(document.querySelectorAll('label, span, p, div, h4'));
+                for (var el of all) {
+                    var txt = (el.textContent || '').trim();
+                    if (txt === '태그' || txt === '태그 입력') {
+                        var parent = el.closest('div, section, li, form');
                         if (parent) {
-                            var inp = parent.querySelector('input');
+                            var inp = parent.querySelector('input, [contenteditable="true"]');
                             if (inp) return inp;
                         }
                     }
@@ -497,9 +521,18 @@ class NaverPublisher:
             """)
 
         if not tag_input:
+            # 디버그: 화면의 모든 input 출력
+            debug = self.driver.execute_script("""
+                return Array.from(document.querySelectorAll('input')).map(function(i){
+                    return (i.className||'') + '|' + (i.getAttribute('placeholder')||'') + '|' + (i.name||'');
+                });
+            """)
+            print(f"  [태그 디버그] input 목록: {debug[:5]}")
             print("  태그 입력 필드를 찾지 못했습니다 (건너뜀)")
             return
 
+        tag_type = self.driver.execute_script("return arguments[0].tagName;", tag_input)
+        print(f"  태그 입력 필드 발견: <{tag_type}>")
         self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", tag_input)
         time.sleep(0.5)
 
@@ -510,7 +543,7 @@ class NaverPublisher:
                 ActionChains(self.driver).send_keys(tag).perform()
                 time.sleep(0.3)
                 ActionChains(self.driver).send_keys(Keys.RETURN).perform()
-                time.sleep(0.3)
+                time.sleep(0.4)
                 print(f"  태그 추가: #{tag}")
             except Exception as e:
                 print(f"  태그 '{tag}' 추가 실패: {e}")
