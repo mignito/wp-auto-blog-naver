@@ -291,8 +291,9 @@ class NaverPublisher:
         return False
 
     # ── SE ONE 본문 주입 (clipboard paste) ──────────────────────
-    def _inject_body_via_paste(self, html: str) -> bool:
-        """임시 탭 HTML 복사 → SE ONE 본문 클릭 → Ctrl+V 붙여넣기"""
+    def _inject_body_via_paste(self, html: str, append: bool = False) -> bool:
+        """임시 탭 HTML 복사 → SE ONE 본문 클릭 → Ctrl+V 붙여넣기
+        append=True 이면 Ctrl+A 생략 (차트 등 기존 내용 보존)"""
         import tempfile, os as _os, re as _re
         tmp_path = None
         orig_handle = self.driver.current_window_handle
@@ -327,56 +328,61 @@ class NaverPublisher:
             time.sleep(1)
             print("  클립보드 복사 완료, 에디터 복귀")
 
-            # 4. SE ONE 본문 영역 클릭 (여러 선택자 순서대로 시도)
-            clicked = False
-            selectors = [
-                '.se-placeholder',                    # SE ONE 빈 에디터 placeholder
-                '.se-text-paragraph',                  # SE ONE 텍스트 단락
-                '.se-section-content',                 # SE ONE 섹션 내용
-                '[contenteditable][data-placeholder]', # data-placeholder 있는 contenteditable
-                '.se-component',                       # SE ONE 컴포넌트
-            ]
-            for sel in selectors:
-                target = self.driver.execute_script(f"""
-                    var el = document.querySelector('{sel}');
-                    if (!el) return null;
-                    var r = el.getBoundingClientRect();
-                    if (r.width > 5 && r.height > 0 && r.top >= 0 && r.top < window.innerHeight)
-                        return el;
-                    return null;
-                """)
-                if target:
+            if append:
+                # append 모드: 차트 등 기존 내용 보존 — 클릭 없이 현재 커서 위치에 Ctrl+V
+                # (publish()에서 이미 Ctrl+End로 커서를 최하단에 위치시킴)
+                print("  append 모드: 현재 커서 위치에 직접 붙여넣기")
+            else:
+                # 빈 에디터 모드: SE ONE 본문 영역 클릭 후 Ctrl+A → Ctrl+V
+                clicked = False
+                selectors = [
+                    '.se-placeholder',                    # SE ONE 빈 에디터 placeholder
+                    '.se-text-paragraph',                  # SE ONE 텍스트 단락
+                    '.se-section-content',                 # SE ONE 섹션 내용
+                    '[contenteditable][data-placeholder]', # data-placeholder 있는 contenteditable
+                    '.se-component',                       # SE ONE 컴포넌트
+                ]
+                for sel in selectors:
+                    target = self.driver.execute_script(f"""
+                        var el = document.querySelector('{sel}');
+                        if (!el) return null;
+                        var r = el.getBoundingClientRect();
+                        if (r.width > 5 && r.height > 0 && r.top >= 0 && r.top < window.innerHeight)
+                            return el;
+                        return null;
+                    """)
+                    if target:
+                        try:
+                            self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", target)
+                            time.sleep(0.2)
+                            ActionChains(self.driver).move_to_element(target).click().perform()
+                            time.sleep(0.3)
+                            active_cls = self.driver.execute_script("return document.activeElement.className;") or ""
+                            if 'title' not in active_cls.lower():
+                                print(f"  본문 클릭 완료 (selector='{sel}', active='{active_cls[:40]}')")
+                                clicked = True
+                                break
+                            else:
+                                print(f"  selector='{sel}' → title에 포커스됨, 다음 시도")
+                        except Exception as _e:
+                            print(f"  selector='{sel}' 클릭 실패: {str(_e)[:60]}")
+
+                if not clicked:
+                    print("  [경고] SE ONE 본문 셀렉터 실패, 좌표 클릭 시도")
                     try:
-                        self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", target)
-                        time.sleep(0.2)
-                        ActionChains(self.driver).move_to_element(target).click().perform()
+                        title_el = self.driver.find_element(By.CSS_SELECTOR, "div.se-title-text")
+                        self.driver.execute_script("arguments[0].scrollIntoView({block:'start'});", title_el)
                         time.sleep(0.3)
-                        active_cls = self.driver.execute_script("return document.activeElement.className;") or ""
-                        if 'title' not in active_cls.lower():
-                            print(f"  본문 클릭 완료 (selector='{sel}', active='{active_cls[:40]}')")
-                            clicked = True
-                            break
-                        else:
-                            print(f"  selector='{sel}' → title에 포커스됨, 다음 시도")
-                    except Exception as _e:
-                        print(f"  selector='{sel}' 클릭 실패: {str(_e)[:60]}")
+                        ActionChains(self.driver).move_to_element_with_offset(title_el, 0, 150).click().perform()
+                        time.sleep(0.3)
+                        print("  좌표 클릭 완료 (title+150px)")
+                    except Exception as _e2:
+                        print(f"  좌표 클릭 실패: {_e2}")
 
-            if not clicked:
-                # 최후 수단: 제목 아래 좌표 클릭
-                print("  [경고] SE ONE 본문 셀렉터 실패, 좌표 클릭 시도")
-                try:
-                    title_el = self.driver.find_element(By.CSS_SELECTOR, "div.se-title-text")
-                    self.driver.execute_script("arguments[0].scrollIntoView({block:'start'});", title_el)
-                    time.sleep(0.3)
-                    ActionChains(self.driver).move_to_element_with_offset(title_el, 0, 150).click().perform()
-                    time.sleep(0.3)
-                    print("  좌표 클릭 완료 (title+150px)")
-                except Exception as _e2:
-                    print(f"  좌표 클릭 실패: {_e2}")
+                ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('a').key_up(Keys.CONTROL).perform()
+                time.sleep(0.3)
 
-            # 5. Ctrl+A → Ctrl+V 붙여넣기
-            ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('a').key_up(Keys.CONTROL).perform()
-            time.sleep(0.3)
+            # 5. Ctrl+V 붙여넣기
             ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
             time.sleep(3)
 
@@ -808,24 +814,42 @@ Start-Sleep -Milliseconds 60
             self._inject_title(article["title"])
             time.sleep(0.5)
 
-            # 4. 본문 주입 — SE ONE placeholder 클릭 → Ctrl+V 붙여넣기
-            body_ok = self._inject_body_via_paste(content_html)
+            # 4. 차트 이미지 먼저 업로드 (빈 body = SE ONE이 첫 번째 블록으로 삽입)
+            chart_file = stock.get("chart_file", "")
+            if chart_file:
+                # 본문 placeholder 클릭으로 SE ONE body 포커스 확보
+                try:
+                    ph = self.driver.execute_script("""
+                        var el = document.querySelector('.se-placeholder');
+                        if (el) { var r = el.getBoundingClientRect(); if (r.top >= 0 && r.top < window.innerHeight) return el; }
+                        return document.querySelector('.se-section-content');
+                    """)
+                    if ph:
+                        self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", ph)
+                        time.sleep(0.2)
+                        ActionChains(self.driver).move_to_element(ph).click().perform()
+                        time.sleep(0.3)
+                        print("  body 포커스 확보 완료 (차트 업로드 준비)")
+                except Exception as _fe:
+                    print(f"  body 포커스 실패 (무시): {_fe}")
+
+                self._insert_chart_image(chart_file)
+                time.sleep(1.5)
+
+                # 차트 삽입 후 문서 끝으로 커서 이동 (본문은 차트 다음에 붙임)
+                try:
+                    ActionChains(self.driver).key_down(Keys.CONTROL).send_keys(Keys.END).key_up(Keys.CONTROL).perform()
+                    time.sleep(0.3)
+                    print("  차트 삽입 완료, 커서 최하단으로 이동")
+                except Exception:
+                    pass
+
+            # 5. 본문 주입 — 차트 이미 있으면 append=True (Ctrl+A 생략, 차트 보존)
+            body_ok = self._inject_body_via_paste(content_html, append=bool(chart_file))
             if not body_ok:
                 print("  paste 실패, innerHTML fallback 시도")
                 self._inject_body_via_js_html(content_html)
             time.sleep(2)
-
-            # 5. 차트 이미지 SE ONE 업로드 — 커서를 문서 최상단으로 이동 후 삽입
-            chart_file = stock.get("chart_file", "")
-            if chart_file:
-                try:
-                    ActionChains(self.driver).key_down(Keys.CONTROL).send_keys(Keys.HOME).key_up(Keys.CONTROL).perform()
-                    time.sleep(0.5)
-                    print("  커서 최상단 이동 완료")
-                except Exception as _ce:
-                    print(f"  커서 이동 실패 (무시): {_ce}")
-                self._insert_chart_image(chart_file)
-                time.sleep(1)
 
             time.sleep(1)
 
