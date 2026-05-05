@@ -156,8 +156,13 @@ def main():
 
     print("\n" + "=" * 55)
     status = "발행" if os.getenv("POST_STATUS") == "publish" else "임시저장"
-    print(f"완료! {status} → {post_url or '확인 필요'}")
-    print("=" * 55)
+    if post_url:
+        print(f"완료! {status} → {post_url}")
+        print("=" * 55)
+    else:
+        print(f"[실패] {status} 중 오류 발생 (URL 없음)")
+        print("=" * 55)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

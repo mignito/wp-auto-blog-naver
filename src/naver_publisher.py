@@ -149,6 +149,14 @@ class NaverPublisher:
             print("  헤드리스 자동 로그인 실패.")
             return False
 
+        # CI 환경(GitHub Actions)이면 수동 입력 불가 → 자동 로그인 시도
+        if os.getenv("CI") or os.getenv("GITHUB_ACTIONS"):
+            print("  CI 환경 감지 → 자동 로그인 시도...")
+            if self._auto_login():
+                return True
+            print("  CI 자동 로그인 실패. 쿠키를 갱신해주세요.")
+            return False
+
         # non-headless: 수동 로그인 (봇 감지 방지를 위해 자동 입력 안 함)
         print("\n" + "="*55)
         print("  [브라우저 로그인 필요]")

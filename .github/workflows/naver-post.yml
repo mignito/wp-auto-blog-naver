@@ -8,6 +8,7 @@ on:
 env:
   PYTHONIOENCODING: utf-8
   DISPLAY: :99                   # xvfb 가상 디스플레이 번호
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   naver-post:
