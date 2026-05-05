@@ -14,10 +14,14 @@ jobs:
   naver-post:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: write          # recent_stocks.json 커밋 push 권한
 
     steps:
       - name: 코드 체크아웃
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Python 3.11 설치
         uses: actions/setup-python@v5
@@ -70,6 +74,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
           git add data/recent_stocks.json
           git diff --staged --quiet || git commit -m "auto: 발행 이력 업데이트 [skip ci]"
           git push
