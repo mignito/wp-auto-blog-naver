@@ -271,73 +271,130 @@ def _generate_chart(stock: dict) -> tuple:
 class StockFinder:
     def get_hot_stock(self) -> dict:
         """
-        인기/급상승/급하락/거래량 종목 통합 → yfinance 데이터 + 차트 반환.
-        최근 20개 포스팅 종목 중복 방지.
+        종목 선택 우선순위 (최근 10개 중복 제외):
+          1순위: 급상승 종목 (모멘텀)
+          2순위: 거래량 급증 종목 (시장 관심)
+          3순위: 인기 종목
+          4순위: 급하락 종목 (반등 기대)
+          5순위: 전체 중복 시 → 급하락 종목에서 강제 선택 (다양성 확보)
         """
-        hot     = _scrape_hot_stocks(10)
-        rise    = _scrape_rise_stocks(10)
-        fall    = _scrape_fall_stocks(10)
-        volume  = _scrape_volume_stocks(10)
+        # 블로그 RSS + 로컬 이력 기반 중복 체크 함수 초기화
+        self._recent_codes(10)
+        is_recent = getattr(self, "_is_recent_fn", lambda code, name: False)
 
-        # 소스별 합산 후 코드 기준 중복 제거 (앞 소스 우선)
-        seen = set()
-        candidates = []
-        for stock in hot + rise + fall + volume:
+        rise   = _scrape_rise_stocks(10)
+        volume = _scrape_volume_stocks(10)
+        hot    = _scrape_hot_stocks(10)
+        fall   = _scrape_fall_stocks(10)
+
+        # 우선순위 순서로 중복 제거 후 단일 리스트 구성
+        seen, priority_list = set(), []
+        for stock in rise + volume + hot + fall:
             if stock["code"] not in seen:
                 seen.add(stock["code"])
-                candidates.append(stock)
+                priority_list.append(stock)
 
-        if not candidates:
+        if not priority_list:
             print("  스크래핑 전체 실패 → fallback 목록 사용")
-            candidates = FALLBACK_STOCKS.copy()
-            random.shuffle(candidates)
+            priority_list = FALLBACK_STOCKS.copy()
+            random.shuffle(priority_list)
 
-        # 최근 10개 발행 종목 제외 (앞으로 정렬, 못 피하면 뒤에 배치)
-        recent = self._recent_codes(10)
-        ordered = [c for c in candidates if c["code"] not in recent] + \
-                  [c for c in candidates if c["code"] in recent]
+        non_recent = [c for c in priority_list if not is_recent(c["code"], c["name"])]
+        skipped    = [c["name"] for c in priority_list if is_recent(c["code"], c["name"])]
+        if skipped:
+            print(f"  최근 10개 이내 중복 건너뜀: {skipped}")
+        print(f"  선택 가능 후보: {len(non_recent)}개")
 
-        for candidate in ordered[:15]:
+        # Phase 1: 최근 미포함 종목 우선순위 순서대로 시도
+        for candidate in non_recent:
             name, code = candidate["name"], candidate["code"]
-            if code in recent:
-                print(f"  '{name}({code})' — 최근 10개 이내 종목, 건너뜀")
-                continue
             print(f"  '{name}({code})' 데이터 수집 중...")
             data = _fetch_yfinance(code, name)
             if not data:
-                print(f"    yfinance 데이터 없음, 다음 종목으로")
+                print(f"    yfinance 데이터 없음, 다음으로")
                 continue
+            print(f"  [OK] {name} 선택 | {data['price']:,.0f}원 ({data['change_pct']:+.2f}%)")
+            return self._attach_chart(data)
 
-            print(f"  [OK] {name} 선택 | 현재가 {data['price']:,.0f}원 ({data['change_pct']:+.2f}%)")
-            print("  차트 생성 중...")
-            png_bytes, b64, chart_path = _generate_chart(data)
-            data["chart_bytes"] = png_bytes
-            data["chart_b64"]   = b64
-            data["chart_file"]  = chart_path
-            print(f"  [OK] 차트 저장: {chart_path}")
-            return data
+        # Phase 2: 모두 최근 이내 → 급하락 종목에서 강제 선택 (다양성 우선)
+        print("  [경고] 모든 후보가 최근 10개 이내 → 급하락 종목 강제 선택")
+        for candidate in fall:
+            name, code = candidate["name"], candidate["code"]
+            if not is_recent(code, name):
+                data = _fetch_yfinance(code, name)
+                if data:
+                    print(f"  [강제선택-하락주] {name} ({data['change_pct']:+.2f}%)")
+                    return self._attach_chart(data)
 
-        # recent 필터 무시하고 재시도 (모든 종목이 최근 20개인 극단적 상황)
-        print("  [경고] 모든 후보가 최근 20개 이내 — recent 필터 해제 후 재시도")
-        for candidate in ordered[:5]:
+        # Phase 3: 최후 수단 — recent 필터 완전 해제
+        print("  [최후수단] recent 필터 해제 후 재시도")
+        for candidate in priority_list[:5]:
             name, code = candidate["name"], candidate["code"]
             data = _fetch_yfinance(code, name)
             if data:
-                png_bytes, b64, chart_path = _generate_chart(data)
-                data["chart_bytes"] = png_bytes
-                data["chart_b64"]   = b64
-                data["chart_file"]  = chart_path
-                return data
+                return self._attach_chart(data)
 
         raise RuntimeError("주식 데이터 수집 실패 (모든 후보 불가)")
 
+    def _attach_chart(self, data: dict) -> dict:
+        print("  차트 생성 중...")
+        png_bytes, b64, chart_path = _generate_chart(data)
+        data["chart_bytes"] = png_bytes
+        data["chart_b64"]   = b64
+        data["chart_file"]  = chart_path
+        print(f"  [OK] 차트 저장: {chart_path}")
+        return data
+
     def _recent_codes(self, n: int) -> set:
-        """data/recent_stocks.json에서 최근 n개 종목 코드 반환 (git으로 영속)."""
+        """
+        중복 방지: 블로그 RSS + 로컬 이력 두 곳에서 최근 n개 종목명 확인.
+
+        우선순위:
+          1. 네이버 블로그 RSS (실제 발행 기준, 가장 신뢰)
+          2. data/recent_stocks.json (git 영속, RSS 실패 시 fallback)
+        """
+        blog_id = os.getenv("NAVER_BLOG_ID", "")
+        names_from_blog: set = set()
+
+        # ── 블로그 RSS에서 최근 제목 수집 ─────────────────────────
+        if blog_id:
+            try:
+                import xml.etree.ElementTree as ET
+                rss_url = f"https://rss.blog.naver.com/{blog_id}.xml"
+                resp = requests.get(rss_url, timeout=8, headers=HEADERS)
+                root = ET.fromstring(resp.content)
+                titles = [item.findtext("title", "") for item in root.findall(".//item")][:n]
+                for title in titles:
+                    names_from_blog.add(title)
+                print(f"  블로그 RSS 최근 {len(titles)}개 제목 수집 완료")
+            except Exception as e:
+                print(f"  블로그 RSS 수집 실패 (fallback 사용): {e}")
+
+        # ── 로컬 이력에서 종목 코드 수집 ─────────────────────────
         import json
+        local_codes: set = set()
+        local_names: set = set()
         path = "data/recent_stocks.json"
         try:
             with open(path, encoding="utf-8") as f:
-                records = json.load(f)  # [{"code": ..., "name": ..., "date": ...}, ...]
-            return {r["code"] for r in records[-n:]}
+                records = json.load(f)
+            local_codes = {r["code"] for r in records[-n:]}
+            local_names = {r["name"] for r in records[-n:]}
         except Exception:
-            return set()
+            pass
+
+        # ── 후보 종목이 최근 발행됐는지 확인하는 함수 ────────────
+        # 블로그 제목에 종목명이 포함되면 중복으로 판단
+        def is_recent(stock_code: str, stock_name: str) -> bool:
+            if stock_code in local_codes:
+                return True
+            if stock_name in local_names:
+                return True
+            for title in names_from_blog:
+                if stock_name in title:
+                    return True
+            return False
+
+        # StockFinder 인스턴스에 저장 (get_hot_stock에서 활용)
+        self._is_recent_fn = is_recent
+        return local_codes  # 호환성 유지용 반환값 (실제 체크는 _is_recent_fn 사용)
