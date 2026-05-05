@@ -3,10 +3,10 @@
 
 비용 구조 (Haiku 4.5):
   재무 테이블  → Python 직접 생성 (토큰 0)
-  차트 분석    → Haiku Vision, max_tokens=700
-  투자 리포트  → Haiku 텍스트, max_tokens=1000
+  차트 분석    → Haiku Vision, max_tokens=900
+  투자 리포트  → Haiku 텍스트, max_tokens=1200
   제목 생성    → Haiku 텍스트, max_tokens=60
-예상 비용: ~$0.006/회 (~9원), 2시간마다(월360회) ~$2.2 (~3,100원)
+예상 비용: ~$0.008/회 (~11원), 2시간마다(월360회) ~$2.9 (~4,100원)
 """
 
 import os
@@ -283,7 +283,7 @@ class ContentGenerator:
             "4. <h3>⚡ 기술적 신호</h3> 골든/데드크로스, 과매수·과매도\n"
             "5. <h3>🎯 단기 전망(1~2주)</h3> 시나리오별 조건, 핵심 가격대"
         )
-        return self._call(system, user, max_tokens=700, chart_b64=chart_b64)
+        return self._call(system, user, max_tokens=900, chart_b64=chart_b64)
 
     # ── [Haiku] 한경컨센서스 스타일 투자 리포트 ──────────────────
     def _write_summary(self, stock: dict, chart_analysis: str = "") -> str:
@@ -355,7 +355,7 @@ class ContentGenerator:
         )
         return self._call(
             "국내 증권사 애널리스트. 한경컨센서스 스타일 투자 리포트 HTML만 출력.",
-            user, max_tokens=1000
+            user, max_tokens=1200
         )
 
     # ── 전체 글 조립 ─────────────────────────────────────────────
