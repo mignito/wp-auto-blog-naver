@@ -115,6 +115,7 @@ def main():
     print(f"\n[Step 2] {stock['name']} 분석 콘텐츠 생성")
     gen     = ContentGenerator()
     article = gen.generate_article(stock)
+    gen.log_cost_summary()
 
     # ── --dry 미리보기 ────────────────────────────────────────
     if args.dry:

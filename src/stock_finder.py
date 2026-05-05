@@ -251,7 +251,7 @@ def _generate_chart(stock: dict) -> tuple:
     plt.tight_layout(pad=1.5)
 
     buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=90, bbox_inches="tight",
+    plt.savefig(buf, format="png", dpi=72, bbox_inches="tight",
                 facecolor="#0d1117")
     plt.close(fig)
     buf.seek(0)

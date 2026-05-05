@@ -1,12 +1,12 @@
 """
 주식 분석 블로그 콘텐츠 생성 모듈
 
-비용 구조:
+비용 구조 (Haiku 4.5):
   재무 테이블  → Python 직접 생성 (토큰 0)
-  차트 분석    → Haiku Vision (메인 섹션, 토큰 확장)
-  회사·투자    → Haiku 텍스트 (초단축)
-  Sonnet 호출  → 없음
-예상 비용: ~$0.008/회 (~11원), 월 30회 ~330원
+  차트 분석    → Haiku Vision, max_tokens=700
+  투자 리포트  → Haiku 텍스트, max_tokens=1000
+  제목 생성    → Haiku 텍스트, max_tokens=60
+예상 비용: ~$0.006/회 (~9원), 2시간마다(월360회) ~$2.2 (~3,100원)
 """
 
 import os
@@ -131,9 +131,15 @@ def _eval_d2e(d2e) -> str:
 
 
 class ContentGenerator:
+    # Haiku 4.5 단가 (USD/1M tokens)
+    _PRICE_IN  = 0.80
+    _PRICE_OUT = 2.40
+
     def __init__(self):
-        self.client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        self.model  = "claude-haiku-4-5-20251001"   # 모든 호출 Haiku
+        self.client    = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        self.model     = "claude-haiku-4-5-20251001"
+        self._total_in  = 0
+        self._total_out = 0
 
     def _call(self, system: str, user: str, max_tokens: int,
               chart_b64: str = None) -> str:
@@ -153,6 +159,12 @@ class ContentGenerator:
                     system=system,
                     messages=[{"role": "user", "content": content}]
                 )
+                i = msg.usage.input_tokens
+                o = msg.usage.output_tokens
+                self._total_in  += i
+                self._total_out += o
+                cost = (i * self._PRICE_IN + o * self._PRICE_OUT) / 1_000_000
+                print(f"    토큰: in={i} out={o} (${cost:.5f})")
                 return self._clean(msg.content[0].text)
             except Exception as e:
                 if "529" in str(e) or "overloaded" in str(e).lower():
@@ -161,6 +173,10 @@ class ContentGenerator:
                     time.sleep(wait)
                 else:
                     raise
+
+    def log_cost_summary(self):
+        total = (self._total_in * self._PRICE_IN + self._total_out * self._PRICE_OUT) / 1_000_000
+        print(f"  [API 비용] 총 in={self._total_in} out={self._total_out} → ${total:.5f} (≈{total*1400:.0f}원)")
 
     def _clean(self, text: str) -> str:
         text = re.sub(r"^```html\s*|^```\s*|\s*```$|```html|```", "", text.strip())
@@ -267,7 +283,7 @@ class ContentGenerator:
             "4. <h3>⚡ 기술적 신호</h3> 골든/데드크로스, 과매수·과매도\n"
             "5. <h3>🎯 단기 전망(1~2주)</h3> 시나리오별 조건, 핵심 가격대"
         )
-        return self._call(system, user, max_tokens=900, chart_b64=chart_b64)
+        return self._call(system, user, max_tokens=700, chart_b64=chart_b64)
 
     # ── [Haiku] 한경컨센서스 스타일 투자 리포트 ──────────────────
     def _write_summary(self, stock: dict, chart_analysis: str = "") -> str:
@@ -339,7 +355,7 @@ class ContentGenerator:
         )
         return self._call(
             "국내 증권사 애널리스트. 한경컨센서스 스타일 투자 리포트 HTML만 출력.",
-            user, max_tokens=1200
+            user, max_tokens=1000
         )
 
     # ── 전체 글 조립 ─────────────────────────────────────────────
