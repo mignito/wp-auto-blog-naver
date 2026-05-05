@@ -292,15 +292,15 @@ class StockFinder:
             candidates = FALLBACK_STOCKS.copy()
             random.shuffle(candidates)
 
-        # 최근 20개 발행 종목 제외 (앞으로 정렬, 못 피하면 뒤에 배치)
-        recent = self._recent_codes(20)
+        # 최근 10개 발행 종목 제외 (앞으로 정렬, 못 피하면 뒤에 배치)
+        recent = self._recent_codes(10)
         ordered = [c for c in candidates if c["code"] not in recent] + \
                   [c for c in candidates if c["code"] in recent]
 
         for candidate in ordered[:15]:
             name, code = candidate["name"], candidate["code"]
             if code in recent:
-                print(f"  '{name}({code})' — 최근 20개 이내 종목, 건너뜀")
+                print(f"  '{name}({code})' — 최근 10개 이내 종목, 건너뜀")
                 continue
             print(f"  '{name}({code})' 데이터 수집 중...")
             data = _fetch_yfinance(code, name)
@@ -332,25 +332,12 @@ class StockFinder:
         raise RuntimeError("주식 데이터 수집 실패 (모든 후보 불가)")
 
     def _recent_codes(self, n: int) -> set:
+        """data/recent_stocks.json에서 최근 n개 종목 코드 반환 (git으로 영속)."""
         import json
-        entries = []
-        log_dir = "logs"
-        if not os.path.isdir(log_dir):
+        path = "data/recent_stocks.json"
+        try:
+            with open(path, encoding="utf-8") as f:
+                records = json.load(f)  # [{"code": ..., "name": ..., "date": ...}, ...]
+            return {r["code"] for r in records[-n:]}
+        except Exception:
             return set()
-        for fname in sorted(os.listdir(log_dir), reverse=True)[:6]:
-            try:
-                with open(os.path.join(log_dir, fname), encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        entry = json.loads(line)
-                        date  = entry.get("date", "")
-                        code  = entry.get("stock_code", "")
-                        if code:
-                            entries.append((date, code))
-            except Exception:
-                pass
-        # 날짜 내림차순 정렬 후 최근 n개 코드만 반환
-        entries.sort(key=lambda x: x[0], reverse=True)
-        return {code for _, code in entries[:n]}

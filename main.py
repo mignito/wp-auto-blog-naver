@@ -67,6 +67,25 @@ def save_log(article: dict, post_url: str):
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     print(f"  로그 저장: {log_file}")
 
+    # 발행 성공 시 recent_stocks.json 업데이트 (git으로 중복 방지 영속)
+    if post_url and article.get("stock_code"):
+        recent_path = "data/recent_stocks.json"
+        os.makedirs("data", exist_ok=True)
+        try:
+            with open(recent_path, encoding="utf-8") as f:
+                records = json.load(f)
+        except Exception:
+            records = []
+        records.append({
+            "code": article["stock_code"],
+            "name": article.get("stock_name", ""),
+            "date": datetime.now().isoformat(),
+        })
+        records = records[-10:]  # 최근 10개만 유지
+        with open(recent_path, "w", encoding="utf-8") as f:
+            json.dump(records, f, ensure_ascii=False, indent=2)
+        print(f"  중복 방지 이력 업데이트: {article['stock_name']} (총 {len(records)}개)")
+
 
 def main():
     parser = argparse.ArgumentParser(description="네이버 블로그 주식 분석 자동 포스팅")
