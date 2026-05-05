@@ -49,22 +49,39 @@ class NaverPublisher:
         # detect installed Chrome version to download matching ChromeDriver
         import subprocess, re as _re
         ver = None
-        for reg_path in [
-            r"HKCU\SOFTWARE\Google\Chrome\BLBeacon",
-            r"HKLM\SOFTWARE\Google\Chrome\BLBeacon",
-            r"HKLM\SOFTWARE\WOW6432Node\Google\Chrome\BLBeacon",
-        ]:
-            try:
-                out = subprocess.check_output(
-                    ["reg", "query", reg_path, "/v", "version"],
-                    stderr=subprocess.DEVNULL
-                ).decode(errors="ignore")
-                m = _re.search(r"(\d+)\.\d+\.\d+\.\d+", out)
-                if m:
-                    ver = int(m.group(1))
-                    break
-            except Exception:
-                pass
+        if IS_WINDOWS:
+            for reg_path in [
+                r"HKCU\SOFTWARE\Google\Chrome\BLBeacon",
+                r"HKLM\SOFTWARE\Google\Chrome\BLBeacon",
+                r"HKLM\SOFTWARE\WOW6432Node\Google\Chrome\BLBeacon",
+            ]:
+                try:
+                    out = subprocess.check_output(
+                        ["reg", "query", reg_path, "/v", "version"],
+                        stderr=subprocess.DEVNULL
+                    ).decode(errors="ignore")
+                    m = _re.search(r"(\d+)\.\d+\.\d+\.\d+", out)
+                    if m:
+                        ver = int(m.group(1))
+                        break
+                except Exception:
+                    pass
+        else:
+            # Linux: GitHub Actions 환경
+            for cmd in [
+                ["google-chrome", "--version"],
+                ["google-chrome-stable", "--version"],
+                ["chromium-browser", "--version"],
+                ["chromium", "--version"],
+            ]:
+                try:
+                    out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode(errors="ignore")
+                    m = _re.search(r"(\d+)\.\d+\.\d+", out)
+                    if m:
+                        ver = int(m.group(1))
+                        break
+                except Exception:
+                    pass
         print(f"  Chrome 버전 감지: {ver}")
         kwargs = {"options": options}
         if ver:
